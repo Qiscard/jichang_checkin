@@ -1,6 +1,6 @@
 import requests, json, re, os
 # 机场的地址
-url = 'https://ikuuu.de'
+url = 'https://ikuuu.nl'
 # 配置用户名（一般是邮箱）
 
 config = os.environ.get('CONFIG')
