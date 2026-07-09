@@ -1,2 +1,2 @@
 requests>=2.23.0
-geekedtest
+geeked @ git+https://github.com/xKiian/GeekedTest.git
