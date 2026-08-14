@@ -31,7 +31,7 @@ from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey.RSA import construct
 from Crypto.Util.Padding import pad
 
-DEFAULT_URL = "https://ikuuu.win"
+DEFAULT_URL = "https://ikuuu.foo"
 DEFAULT_CAPTCHA_ID = "cc96d05ba8b60f9112f76e18526fcb73"
 DEFAULT_RISK_TYPE = "ai"
 # Domain bulletin / mirror list pages that do NOT provide SSPanel APIs.
@@ -44,32 +44,76 @@ DIRECTORY_HOSTS = {
     "www.ikuuu.org",
     "ikuuu.ch",
     "www.ikuuu.ch",
+    "ikuuu.win",
+    "www.ikuuu.win",
+    "ikuuu.fyi",
+    "www.ikuuu.fyi",
+    "ikuuu.eu",
+    "www.ikuuu.eu",
+    "ikuuu.pw",
+    "www.ikuuu.pw",
+    "ikuuu.one",
+    "www.ikuuu.one",
+    "ikuuu.li",
+    "www.ikuuu.li",
+    "ikuuu.club",
+    "www.ikuuu.club",
+    "ikuuu.cc",
+    "www.ikuuu.cc",
 }
 # Domain directory page that publishes the latest available panel domains.
-DOMAIN_DIRECTORY_URL = "https://ikuuu.de/"
+DOMAIN_DIRECTORY_URL = "https://ikuuu.li/"
 # Known panel hosts used as fallback when discovery fails or configured URL
 # is a directory page / returns 405. Extended at runtime with discovered hosts.
-# ikuuu periodically rotates panel domains (win/fyi/eu/pw/...); list every
-# known panel host so the script keeps working when discovery is unavailable.
+# ikuuu periodically rotates panel domains; list every known panel host so the
+# script keeps working when discovery is unavailable. Updated 2026-08: old
+# domains (win/fyi/eu/pw/one) are dead, current live domains are foo/bar.
 PANEL_CANDIDATES = [
-    "https://ikuuu.win",
-    "https://ikuuu.fyi",
-    "https://ikuuu.eu",
-    "https://ikuuu.pw",
-    "https://ikuuu.one",
+    "https://ikuuu.foo",
+    "https://ikuuu.bar",
 ]
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-MAX_CAPTCHA_RETRIES = 3
+MAX_CAPTCHA_RETRIES = 5
 MAX_CHECKIN_RETRIES = 5
 REQUEST_TIMEOUT = 20
 
 
 def env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
+
+
+_cffi_session = None
+
+
+def _get_cffi():
+    global _cffi_session
+    if _cffi_session is not None:
+        return _cffi_session
+    try:
+        from curl_cffi import requests as _cffi_requests
+        _cffi_session = _cffi_requests.Session(impersonate="chrome124")
+    except ImportError:
+        _cffi_session = False
+    return _cffi_session
+
+
+def _http_get(url, **kwargs):
+    s = _get_cffi()
+    if s:
+        return s.get(url, allow_redirects=True, **kwargs)
+    return requests.get(url, **kwargs)
+
+
+def _http_post(url, **kwargs):
+    s = _get_cffi()
+    if s:
+        return s.post(url, allow_redirects=False, **kwargs)
+    kwargs.pop("allow_redirects", None)
+    return requests.post(url, **kwargs)
 
 
 CAPTCHA_ID = env("CAPTCHA_ID", DEFAULT_CAPTCHA_ID)
@@ -204,7 +248,7 @@ def parse_json_loose(text: str) -> Optional[dict]:
 
 def host_from_url(url: str) -> str:
     parsed = urlparse(url if "://" in url else f"https://{url}")
-    return (parsed.netloc or "ikuuu.win").lower()
+    return (parsed.netloc or "ikuuu.foo").lower()
 
 
 # Hosts that should never be treated as real SSPanel panels even if they appear
@@ -218,6 +262,22 @@ _NON_PANEL_HOSTS = {
     "www.ikuuu.org",
     "ikuuu.ch",
     "www.ikuuu.ch",
+    "ikuuu.win",
+    "www.ikuuu.win",
+    "ikuuu.fyi",
+    "www.ikuuu.fyi",
+    "ikuuu.eu",
+    "www.ikuuu.eu",
+    "ikuuu.pw",
+    "www.ikuuu.pw",
+    "ikuuu.one",
+    "www.ikuuu.one",
+    "ikuuu.li",
+    "www.ikuuu.li",
+    "ikuuu.club",
+    "www.ikuuu.club",
+    "ikuuu.cc",
+    "www.ikuuu.cc",
 }
 
 
@@ -231,11 +291,10 @@ def discover_panel_hosts() -> List[str]:
     """
     discovered: List[str] = []
     try:
-        resp = requests.get(
+        resp = _http_get(
             DOMAIN_DIRECTORY_URL,
             headers={"user-agent": UA, "accept": "text/html,*/*"},
             timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
         )
     except Exception as exc:
         print(f"[url] discover {DOMAIN_DIRECTORY_URL} failed: {exc}")
@@ -304,7 +363,7 @@ def probe_panel_api(base: str) -> Tuple[bool, str]:
     base = normalize_base_url(base)
     url = f"{base}/auth/login"
     try:
-        resp = requests.post(
+        resp = _http_post(
             url,
             headers={
                 "user-agent": UA,
@@ -322,7 +381,6 @@ def probe_panel_api(base: str) -> Tuple[bool, str]:
                 "pageLoadedAt": str(int(time.time() * 1000)),
             },
             timeout=12,
-            allow_redirects=False,
         )
     except Exception as exc:
         return False, f"request failed: {exc}"
@@ -1199,16 +1257,18 @@ def _ensure_dddd():
 class IconSolver:
     """Solve GeeTest V4 icon/word captcha by matching question icons to grid positions.
 
-    Uses ddddocr detection to locate grid cells in the big image, then OCR to
-    classify each cell. Question icons are also OCR'd and matched against the
-    grid. Falls back to slide_match (template matching) when OCR returns empty.
+    For icon type: uses the custom geetest_v4_icon.onnx model to classify each
+    grid cell and ques icon, then matches by object+direction.
+    For word type: uses ddddocr OCR to recognize characters in grid cells and
+    ques icons, then matches by text.
     """
 
-    def __init__(self, imgs_path: str, ques: list, http_get=None):
+    def __init__(self, imgs_path: str, ques: list, http_get=None, captcha_type="icon"):
         self.imgs_url = f"{_ICON_STATIC_URL}/{imgs_path}"
         self.ques = ques
         self._get = http_get or _default_icon_http_get
         self.imgs_bytes = self._get(self.imgs_url)
+        self.captcha_type = captcha_type
 
     def find_icon_position(self):
         _ensure_dddd()
@@ -1218,18 +1278,81 @@ class IconSolver:
         bboxes = _dddd_det.detection(self.imgs_bytes)
         im = cv2.imdecode(np.frombuffer(self.imgs_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-        # OCR each grid cell
-        grid_texts = []
         grid_centers = []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox
+            grid_centers.append([(x1 + (x2 - x1) / 2) * 33, (y1 + (y2 - y1) / 2) * 49])
+
+        if self.captcha_type == "icon":
+            return self._solve_icon(bboxes, im, grid_centers)
+        else:
+            return self._solve_word(bboxes, im, grid_centers)
+
+    def _classify_icon(self, img_bytes):
+        if _dddd_cnn is not None and _dddd_cnn is not _dddd_ocr:
+            res = _dddd_cnn.classification(img_bytes)
+            return res if res else ""
+        return ""
+
+    def _solve_icon(self, bboxes, im, grid_centers):
+        import cv2
+        import numpy as np
+
+        grid_labels = []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox
+            cell = im[y1:y2, x1:x2]
+            _, cell_bytes = cv2.imencode(".png", cell)
+            label = self._classify_icon(cell_bytes.tobytes())
+            grid_labels.append(label)
+
+        ques_labels = []
+        for q in self.ques:
+            q_url = f"{_ICON_STATIC_URL}/{q}"
+            q_bytes = self._get(q_url)
+            q_img = cv2.imdecode(np.frombuffer(q_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            if q_img is not None and q_img.ndim == 3 and q_img.shape[2] == 4:
+                alpha = q_img[:, :, 3]
+                bgr = q_img[:, :, :3]
+                white_bg = np.ones_like(bgr) * 255
+                q_comp = np.where(alpha[:, :, np.newaxis] > 128, bgr, white_bg)
+                _, comp_bytes = cv2.imencode(".png", q_comp)
+                label = self._classify_icon(comp_bytes.tobytes())
+            else:
+                label = self._classify_icon(q_bytes)
+            ques_labels.append(label)
+
+        results = []
+        used = set()
+        for ql in ques_labels:
+            matched = False
+            for i, gl in enumerate(grid_labels):
+                if gl and ql and gl == ql and i not in used:
+                    results.append(grid_centers[i])
+                    used.add(i)
+                    matched = True
+                    break
+            if not matched:
+                available = [j for j in range(len(grid_centers)) if j not in used]
+                if available:
+                    pick = random.choice(available)
+                    results.append(grid_centers[pick])
+                    used.add(pick)
+
+        return results
+
+    def _solve_word(self, bboxes, im, grid_centers):
+        import cv2
+        import numpy as np
+
+        grid_texts = []
         for bbox in bboxes:
             x1, y1, x2, y2 = bbox
             cell = im[y1:y2, x1:x2]
             _, cell_bytes = cv2.imencode(".png", cell)
             text = _dddd_ocr.classification(cell_bytes.tobytes())
             grid_texts.append(text)
-            grid_centers.append([(x1 + (x2 - x1) / 2) * 33, (y1 + (y2 - y1) / 2) * 49])
 
-        # OCR each ques icon (composite on white to handle transparency)
         ques_texts = []
         for q in self.ques:
             q_url = f"{_ICON_STATIC_URL}/{q}"
@@ -1245,7 +1368,6 @@ class IconSolver:
                 text = _dddd_ocr.classification(comp_bytes.tobytes())
             ques_texts.append(text)
 
-        # Match ques to grid by text
         results = []
         used = set()
         for qt in ques_texts:
@@ -1256,8 +1378,7 @@ class IconSolver:
                     used.add(i)
                     matched = True
                     break
-            if not matched and grid_centers:
-                # Fallback: pick an unused cell randomly
+            if not matched:
                 available = [j for j in range(len(grid_centers)) if j not in used]
                 if available:
                     pick = random.choice(available)
@@ -1352,7 +1473,9 @@ class GeetestSolver:
             if captcha_type in ("icon", "word") and data.get("imgs") and data.get("ques"):
                 try:
                     solver_icon = IconSolver(
-                        data["imgs"], data["ques"], http_get=lambda u: self.session.get(u, timeout=15).content
+                        data["imgs"], data["ques"],
+                        http_get=lambda u: self.session.get(u, timeout=15).content,
+                        captcha_type=captcha_type,
                     )
                     icon_positions = solver_icon.find_icon_position()
                     effective_risk = captcha_type
@@ -1441,7 +1564,7 @@ def solve_captcha() -> Optional[dict]:
                 f"(id={CAPTCHA_ID}, risk={CAPTCHA_RISK_TYPE})"
             )
             solver = GeetestSolver(CAPTCHA_ID, CAPTCHA_RISK_TYPE)
-            result = solver.solve(max_attempts=40, max_duration_seconds=150)
+            result = solver.solve(max_attempts=60, max_duration_seconds=200)
             if not result or not result.get("lot_number"):
                 raise RuntimeError(f"empty captcha result: {result}")
             print("[captcha] solved")
@@ -1453,8 +1576,12 @@ def solve_captcha() -> Optional[dict]:
     return None
 
 
-def build_session() -> requests.Session:
-    session = requests.Session()
+def build_session() -> "requests.Session":
+    try:
+        from curl_cffi import requests as _cffi_requests
+        session = _cffi_requests.Session(impersonate="chrome124")
+    except ImportError:
+        session = requests.Session()
     session.headers.update(
         {
             "user-agent": UA,
@@ -1479,6 +1606,7 @@ def login(session: requests.Session, email: str, password: str) -> Tuple[bool, s
     global BASE_URL
     login_page = f"{BASE_URL}/auth/login"
     try:
+        page_loaded_at = str(int(time.time() * 1000))
         session.get(login_page, timeout=REQUEST_TIMEOUT)
     except Exception as exc:
         return False, f"open login page failed: {exc}", {}
@@ -1494,11 +1622,11 @@ def login(session: requests.Session, email: str, password: str) -> Tuple[bool, s
 
     payload = {
         "host": host_from_url(BASE_URL),
+        "phase": "password",
         "email": email,
         "passwd": password,
-        "code": "",
-        "twofa_step": 0,
-        "pageLoadedAt": str(int(time.time() * 1000)),
+        "remember_me": "",
+        "pageLoadedAt": page_loaded_at,
         "captcha_result[lot_number]": captcha.get("lot_number", ""),
         "captcha_result[captcha_output]": captcha.get("captcha_output", ""),
         "captcha_result[pass_token]": captcha.get("pass_token", ""),
@@ -1525,7 +1653,7 @@ def login(session: requests.Session, email: str, password: str) -> Tuple[bool, s
         return (
             False,
             "login 405 Not Allowed. URL is not the SSPanel panel. "
-            "Use https://ikuuu.win (panel), not https://ikuuu.co (domain bulletin).",
+            "Use https://ikuuu.foo (panel), not https://ikuuu.li (domain bulletin).",
             {},
         )
 
@@ -1534,30 +1662,31 @@ def login(session: requests.Session, email: str, password: str) -> Tuple[bool, s
         snippet = resp.text[:200].replace("\n", " ")
         hint = ""
         if "405" in snippet or resp.status_code == 405:
-            hint = " | Hint: URL may be domain bulletin page (ikuuu.co), set URL=https://ikuuu.win"
+            hint = " | Hint: URL may be domain bulletin page (ikuuu.li), set URL=https://ikuuu.foo"
         return False, f"login response is not JSON (status={resp.status_code}): {snippet}{hint}", {}
 
     ret = data.get("ret")
+    result = str(data.get("result") or "")
     msg = str(data.get("msg") or "")
     # strip simple html from msg for cleaner push
     msg_plain = re.sub(r"<br\s*/?>", "\n", msg, flags=re.I)
     msg_plain = re.sub(r"<[^>]+>", "", msg_plain).strip()
     phase = str(data.get("phase") or "")
 
-    if ret in (1, "1"):
+    if result == "authenticated" or ret in (1, "1"):
         return True, msg_plain or "login ok", data
-    if ret == 2:
+    if ret == 2 or result == "totp":
         return False, f"account requires 2FA (phase={phase}): {msg_plain}", data
-    if phase == "reset_login" or "verification" in msg_plain.lower() or any(
+    if result == "invalid_phase" or phase == "reset_login" or "verification" in msg_plain.lower() or any(
         k in msg_plain for k in ("\u9a8c\u8bc1", "\u6821\u9a8c", "\u4eba\u673a")
     ):
         return (
             False,
-            f"captcha/login rejected (phase={phase}): {msg_plain}. "
+            f"captcha/login rejected (phase={phase}, result={result}): {msg_plain}. "
             "Login did NOT succeed; any traffic gain today is not from this run.",
             data,
         )
-    return False, f"login failed (ret={ret}, phase={phase}): {msg_plain}", data
+    return False, f"login failed (ret={ret}, phase={phase}, result={result}): {msg_plain}", data
 
 
 def checkin(session: requests.Session) -> Tuple[bool, str, dict]:

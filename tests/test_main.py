@@ -180,7 +180,7 @@ class CheckinDecisionTests(unittest.TestCase):
 
 
 class CheckinRetryTests(unittest.TestCase):
-    def _mock_response(self, text, url="https://ikuuu.win/user/checkin"):
+    def _mock_response(self, text, url="https://ikuuu.foo/user/checkin"):
         resp = Mock()
         resp.text = text
         resp.url = url
@@ -212,7 +212,7 @@ class CheckinRetryTests(unittest.TestCase):
     def test_does_not_retry_when_redirected_to_login(self, _sleep):
         session = Mock()
         session.post.return_value = self._mock_response(
-            "<html>login</html>", url="https://ikuuu.win/auth/login"
+            "<html>login</html>", url="https://ikuuu.foo/auth/login"
         )
         ok, msg, _ = main.checkin(session)
         self.assertFalse(ok)
@@ -296,53 +296,53 @@ class SmtpConfigurationTests(unittest.TestCase):
 class PanelDiscoveryTests(unittest.TestCase):
     def test_directory_page_links_yield_panel_hosts(self):
         html = (
-            '<a href="https://ikuuu.win/">ikuuu.win</a>'
-            '<a href="https://ikuuu.fyi/">ikuuu.fyi</a>'
-            '<a href="https://ikuuu.de/">ikuuu.de</a>'
+            '<a href="https://ikuuu.foo/">ikuuu.foo</a>'
+            '<a href="https://ikuuu.bar/">ikuuu.bar</a>'
+            '<a href="https://ikuuu.li/">ikuuu.li</a>'
             '<a href="#top">anchor</a>'
         )
         response = Mock(status_code=200, text=html)
-        with patch.object(main.requests, "get", return_value=response) as get_mock:
+        with patch.object(main, "_http_get", return_value=response) as get_mock:
             hosts = main.discover_panel_hosts()
 
         get_mock.assert_called_once()
-        # Directory host ikuuu.de must be filtered out; win + fyi preserved in order.
-        self.assertEqual(hosts, ["https://ikuuu.win", "https://ikuuu.fyi"])
+        # Directory host ikuuu.li must be filtered out; foo + bar preserved in order.
+        self.assertEqual(hosts, ["https://ikuuu.foo", "https://ikuuu.bar"])
 
     def test_non_ikuuu_links_are_ignored(self):
         html = (
             '<a href="https://example.com/">example</a>'
             '<a href="https://github.com/xKiian/GeekedTest">repo</a>'
-            '<a href="https://ikuuu.one/">ikuuu.one</a>'
+            '<a href="https://ikuuu.foo/">ikuuu.foo</a>'
         )
         response = Mock(status_code=200, text=html)
-        with patch.object(main.requests, "get", return_value=response):
+        with patch.object(main, "_http_get", return_value=response):
             hosts = main.discover_panel_hosts()
 
-        self.assertEqual(hosts, ["https://ikuuu.one"])
+        self.assertEqual(hosts, ["https://ikuuu.foo"])
 
     def test_request_failure_returns_empty_list(self):
-        with patch.object(main.requests, "get", side_effect=ConnectionError("boom")):
+        with patch.object(main, "_http_get", side_effect=ConnectionError("boom")):
             hosts = main.discover_panel_hosts()
 
         self.assertEqual(hosts, [])
 
     def test_http_error_returns_empty_list(self):
         response = Mock(status_code=503, text="")
-        with patch.object(main.requests, "get", return_value=response):
+        with patch.object(main, "_http_get", return_value=response):
             hosts = main.discover_panel_hosts()
 
         self.assertEqual(hosts, [])
 
     def test_falls_back_to_plain_text_substring(self):
-        html = "Current domain: ikuuu.win (online). Backup: ikuuu.fyi."
+        html = "Current domain: ikuuu.foo (online). Backup: ikuuu.bar."
         response = Mock(status_code=200, text=html)
-        with patch.object(main.requests, "get", return_value=response):
+        with patch.object(main, "_http_get", return_value=response):
             hosts = main.discover_panel_hosts()
 
-        self.assertEqual(hosts, ["https://ikuuu.win", "https://ikuuu.fyi"])
+        self.assertEqual(hosts, ["https://ikuuu.foo", "https://ikuuu.bar"])
 
-    @patch.object(main, "discover_panel_hosts", return_value=["https://ikuuu.fyi"])
+    @patch.object(main, "discover_panel_hosts", return_value=["https://ikuuu.bar"])
     @patch.object(main, "probe_panel_api")
     def test_resolve_prefers_discovered_host_when_configured_is_directory(
         self, probe_mock, _discover_mock
@@ -350,21 +350,21 @@ class PanelDiscoveryTests(unittest.TestCase):
         probe_mock.side_effect = [
             (True, "panel api ok"),
         ]
-        result = main.resolve_base_url("https://ikuuu.de")
+        result = main.resolve_base_url("https://ikuuu.li")
 
-        self.assertEqual(result, "https://ikuuu.fyi")
-        probe_mock.assert_called_once_with("https://ikuuu.fyi")
+        self.assertEqual(result, "https://ikuuu.bar")
+        probe_mock.assert_called_once_with("https://ikuuu.bar")
 
-    @patch.object(main, "discover_panel_hosts", return_value=["https://ikuuu.fyi"])
+    @patch.object(main, "discover_panel_hosts", return_value=["https://ikuuu.bar"])
     @patch.object(main, "probe_panel_api")
     def test_resolve_keeps_configured_when_it_is_a_real_panel(
         self, probe_mock, _discover_mock
     ):
         probe_mock.side_effect = [(True, "panel api ok")]
-        result = main.resolve_base_url("https://ikuuu.win")
+        result = main.resolve_base_url("https://ikuuu.foo")
 
-        self.assertEqual(result, "https://ikuuu.win")
-        probe_mock.assert_called_once_with("https://ikuuu.win")
+        self.assertEqual(result, "https://ikuuu.foo")
+        probe_mock.assert_called_once_with("https://ikuuu.foo")
 
 
 class NotificationTests(unittest.TestCase):

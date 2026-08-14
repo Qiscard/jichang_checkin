@@ -11,7 +11,7 @@ permissions:
 jobs:
   checkin:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -30,7 +30,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -c "import requests, Crypto, ddddocr, cv2, numpy; print('deps ok')"
+          python -c "import requests, Crypto, curl_cffi, ddddocr, cv2, numpy; print('deps ok')"
 
       - name: Run offline tests
         run: python -B -m unittest discover -s tests -v
