@@ -40,14 +40,23 @@ DIRECTORY_HOSTS = {
     "www.ikuuu.co",
     "ikuuu.de",
     "www.ikuuu.de",
+    "ikuuu.org",
+    "www.ikuuu.org",
+    "ikuuu.ch",
+    "www.ikuuu.ch",
 }
 # Domain directory page that publishes the latest available panel domains.
 DOMAIN_DIRECTORY_URL = "https://ikuuu.de/"
 # Known panel hosts used as fallback when discovery fails or configured URL
 # is a directory page / returns 405. Extended at runtime with discovered hosts.
+# ikuuu periodically rotates panel domains (win/fyi/eu/pw/...); list every
+# known panel host so the script keeps working when discovery is unavailable.
 PANEL_CANDIDATES = [
     "https://ikuuu.win",
     "https://ikuuu.fyi",
+    "https://ikuuu.eu",
+    "https://ikuuu.pw",
+    "https://ikuuu.one",
 ]
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,6 +64,7 @@ UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 MAX_CAPTCHA_RETRIES = 3
+MAX_CHECKIN_RETRIES = 5
 REQUEST_TIMEOUT = 20
 
 
@@ -206,6 +216,8 @@ _NON_PANEL_HOSTS = {
     "www.ikuuu.co",
     "ikuuu.org",
     "www.ikuuu.org",
+    "ikuuu.ch",
+    "www.ikuuu.ch",
 }
 
 
@@ -1392,29 +1404,52 @@ def login(session: requests.Session, email: str, password: str) -> Tuple[bool, s
 
 
 def checkin(session: requests.Session) -> Tuple[bool, str, dict]:
-    try:
-        resp = session.post(
-            f"{BASE_URL}/user/checkin",
-            headers=ajax_headers(f"{BASE_URL}/user"),
-            timeout=REQUEST_TIMEOUT,
-        )
-    except Exception as exc:
-        return False, f"checkin request failed: {exc}", {}
+    """POST /user/checkin with bounded retry.
 
-    data = parse_json_loose(resp.text)
-    if not data:
-        if "auth/login" in resp.url or "login" in resp.text.lower()[:500]:
-            return False, "checkin failed: not logged in (redirected to login page)", {}
-        snippet = resp.text[:200].replace("\n", " ")
-        return False, f"checkin response is not JSON: {snippet}", {}
+    Retries on network errors or transient non-JSON responses (the ikuuu
+    checkin endpoint occasionally rate-limits or returns HTML under load).
+    Does NOT retry when the session is clearly unauthenticated (redirected
+    to /auth/login) because retrying without re-login cannot succeed.
+    Borrowed from the Tampermonkey checkin script's bounded-retry approach.
+    """
+    last_msg = ""
+    last_data: dict = {}
+    for attempt in range(1, MAX_CHECKIN_RETRIES + 1):
+        try:
+            resp = session.post(
+                f"{BASE_URL}/user/checkin",
+                headers=ajax_headers(f"{BASE_URL}/user"),
+                timeout=REQUEST_TIMEOUT,
+            )
+        except Exception as exc:
+            last_msg = f"checkin request failed (attempt {attempt}/{MAX_CHECKIN_RETRIES}): {exc}"
+            print(f"[checkin] {last_msg}")
+            if attempt < MAX_CHECKIN_RETRIES:
+                time.sleep(1 + random.random() * 3)
+            continue
 
-    msg = str(data.get("msg") or data)
-    msg_plain = re.sub(r"<br\s*/?>", "\n", msg, flags=re.I)
-    msg_plain = re.sub(r"<[^>]+>", "", msg_plain).strip()
-    ret = data.get("ret")
-    if ret in (1, "1"):
-        return True, msg_plain, data
-    return False, msg_plain or f"unknown checkin response (ret={ret})", data
+        data = parse_json_loose(resp.text)
+        if not data:
+            if "auth/login" in resp.url or "login" in resp.text.lower()[:500]:
+                return False, "checkin failed: not logged in (redirected to login page)", {}
+            snippet = resp.text[:200].replace("\n", " ")
+            last_msg = f"checkin response is not JSON (attempt {attempt}/{MAX_CHECKIN_RETRIES}): {snippet}"
+            last_data = {}
+            print(f"[checkin] {last_msg}")
+            if attempt < MAX_CHECKIN_RETRIES:
+                time.sleep(1 + random.random() * 3)
+            continue
+
+        msg = str(data.get("msg") or data)
+        last_msg = re.sub(r"<[^>]+>", "", re.sub(r"<br\s*/?>", "\n", msg, flags=re.I)).strip()
+        last_data = data
+        ret = data.get("ret")
+        if ret in (1, "1"):
+            return True, last_msg, data
+        # Non-success ret from the panel is a definitive answer; do not retry.
+        return False, last_msg or f"unknown checkin response (ret={ret})", data
+
+    return False, last_msg or "checkin exhausted all retries", last_data
 
 
 def sign_one(index: int, email: str, password: str) -> AccountResult:

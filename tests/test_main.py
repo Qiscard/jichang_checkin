@@ -179,6 +179,72 @@ class CheckinDecisionTests(unittest.TestCase):
         self.assertEqual(result.stage, "签到待确认")
 
 
+class CheckinRetryTests(unittest.TestCase):
+    def _mock_response(self, text, url="https://ikuuu.win/user/checkin"):
+        resp = Mock()
+        resp.text = text
+        resp.url = url
+        return resp
+
+    @patch.object(main.time, "sleep")
+    def test_retries_on_network_error_then_succeeds(self, _sleep):
+        session = Mock()
+        session.post.side_effect = [
+            ConnectionError("boom"),
+            self._mock_response('{"ret":1,"msg":"签到成功，获得 100 MB"}'),
+        ]
+        ok, msg, _ = main.checkin(session)
+        self.assertTrue(ok)
+        self.assertEqual(session.post.call_count, 2)
+
+    @patch.object(main.time, "sleep")
+    def test_retries_on_non_json_then_succeeds(self, _sleep):
+        session = Mock()
+        session.post.side_effect = [
+            self._mock_response("<html>502 Bad Gateway</html>"),
+            self._mock_response('{"ret":1,"msg":"签到成功"}'),
+        ]
+        ok, msg, _ = main.checkin(session)
+        self.assertTrue(ok)
+        self.assertEqual(session.post.call_count, 2)
+
+    @patch.object(main.time, "sleep")
+    def test_does_not_retry_when_redirected_to_login(self, _sleep):
+        session = Mock()
+        session.post.return_value = self._mock_response(
+            "<html>login</html>", url="https://ikuuu.win/auth/login"
+        )
+        ok, msg, _ = main.checkin(session)
+        self.assertFalse(ok)
+        self.assertIn("not logged in", msg)
+        self.assertEqual(session.post.call_count, 1)
+
+    @patch.object(main.time, "sleep")
+    def test_does_not_retry_on_definitive_failure_ret(self, _sleep):
+        session = Mock()
+        session.post.return_value = self._mock_response('{"ret":0,"msg":"已经签到"}')
+        ok, msg, _ = main.checkin(session)
+        self.assertFalse(ok)
+        self.assertEqual(session.post.call_count, 1)
+
+    @patch.object(main.time, "sleep")
+    def test_exhausts_retries_on_persistent_network_error(self, _sleep):
+        session = Mock()
+        session.post.side_effect = ConnectionError("boom")
+        ok, msg, _ = main.checkin(session)
+        self.assertFalse(ok)
+        self.assertIn("attempt", msg.lower())
+        self.assertEqual(session.post.call_count, main.MAX_CHECKIN_RETRIES)
+
+    @patch.object(main.time, "sleep")
+    def test_exhausts_retries_on_persistent_non_json(self, _sleep):
+        session = Mock()
+        session.post.return_value = self._mock_response("<html>error</html>")
+        ok, msg, _ = main.checkin(session)
+        self.assertFalse(ok)
+        self.assertEqual(session.post.call_count, main.MAX_CHECKIN_RETRIES)
+
+
 class SmtpConfigurationTests(unittest.TestCase):
     def test_newapi_individual_secrets_override_grouped_secrets(self):
         with (
