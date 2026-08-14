@@ -573,8 +573,8 @@ class CaptchaSolverTests(unittest.TestCase):
     def test_solve_success_on_first_verify(self):
         solver = main.GeetestSolver("cid", "ai")
         lot = "a1b2c3d4e5f6789012345678abcdef01"
-        load_payload = {"data": {"data": {"lot_number": lot, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}}
-        verify_payload = {"data": {"data": {"result": "success", "seccode": {"lot_number": lot, "captcha_output": "out", "pass_token": "tok", "gen_time": "99"}}}}
+        load_payload = {"data": {"lot_number": lot, "captcha_type": "ai", "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}
+        verify_payload = {"data": {"result": "success", "seccode": {"lot_number": lot, "captcha_output": "out", "pass_token": "tok", "gen_time": "99"}}}
         solver._get = self._make_fake_get(load_payload, verify_payload)
         result = solver.solve(max_attempts=3, max_duration_seconds=10)
         self.assertEqual(result["lot_number"], lot)
@@ -586,10 +586,10 @@ class CaptchaSolverTests(unittest.TestCase):
         lot2 = "b2c3d4e5f6789012345678abcdef012"
         import json as _json
 
-        load1 = {"data": {"data": {"lot_number": lot1, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}}
-        verify1 = {"data": {"data": {"result": "continue", "lot_number": lot2, "payload": "p2", "process_token": "t2", "pt": "1", "payload_protocol": "1"}}}
-        load2 = {"data": {"data": {"lot_number": lot2, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p2", "process_token": "t2", "pt": "1"}}}
-        verify2 = {"data": {"data": {"result": "success", "seccode": {"lot_number": lot2, "captcha_output": "out2", "pass_token": "tok2", "gen_time": "88"}}}}
+        load1 = {"data": {"lot_number": lot1, "captcha_type": "ai", "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}
+        verify1 = {"data": {"result": "continue", "lot_number": lot2, "payload": "p2", "process_token": "t2", "pt": "1", "payload_protocol": "1"}}
+        load2 = {"data": {"lot_number": lot2, "captcha_type": "ai", "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p2", "process_token": "t2", "pt": "1"}}
+        verify2 = {"data": {"result": "success", "seccode": {"lot_number": lot2, "captcha_output": "out2", "pass_token": "tok2", "gen_time": "88"}}}
 
         responses = [load1, verify1, load2, verify2]
 
@@ -606,8 +606,8 @@ class CaptchaSolverTests(unittest.TestCase):
     def test_solve_raises_when_exhausted(self):
         solver = main.GeetestSolver("cid", "ai")
         lot = "a1b2c3d4e5f6789012345678abcdef01"
-        load_payload = {"data": {"data": {"lot_number": lot, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p", "process_token": "t", "pt": "1"}}}
-        verify_payload = {"data": {"data": {"result": "continue", "lot_number": lot, "payload": "p", "process_token": "t", "pt": "1"}}}
+        load_payload = {"data": {"lot_number": lot, "captcha_type": "ai", "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p", "process_token": "t", "pt": "1"}}
+        verify_payload = {"data": {"result": "continue", "lot_number": lot, "payload": "p", "process_token": "t", "pt": "1"}}
         solver._get = self._make_fake_get(load_payload, verify_payload)
         with self.assertRaises(RuntimeError):
             solver.solve(max_attempts=2, max_duration_seconds=5)

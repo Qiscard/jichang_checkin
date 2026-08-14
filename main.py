@@ -878,7 +878,13 @@ def send_email(title: str, content: str, html_content: str) -> DeliveryResult:
         return DeliveryResult("邮件", False, False, "未配置邮件渠道")
 
     if on_gha:
-        if has_smtp:
+        if has_smtp and not has_resend:
+            print(
+                "[push] Running on GitHub Actions with SMTP configured but no RESEND_API_KEY. "
+                "GitHub Actions blocks outbound SMTP ports 465/587. "
+                "Configure RESEND_API_KEY secret to send email via HTTPS."
+            )
+        if has_smtp and has_resend:
             print(
                 "[push] Running on GitHub Actions with SMTP configured: outbound ports "
                 "465/587 may be unavailable. Will prefer Resend HTTPS when configured."
@@ -1064,7 +1070,8 @@ class _GeeSigner:
 
     @staticmethod
     def generate_w(
-        data: dict, captcha_id: str, risk_type: str, constants: Optional[dict] = None
+        data: dict, captcha_id: str, risk_type: str, constants: Optional[dict] = None,
+        icon_positions: Optional[list] = None,
     ) -> str:
         constants = constants or {
             "abo": {"1a8R": "daC2"},
@@ -1099,6 +1106,11 @@ class _GeeSigner:
             "lang": "zh",
             "lot_number": lot_number,
         }
+        if risk_type in ("ai", "invisible"):
+            pass
+        elif risk_type in ("icon", "word") and icon_positions is not None:
+            base["passtime"] = random.randint(600, 1200)
+            base["userresponse"] = icon_positions
         return _GeeSigner.encrypt_w(json.dumps(base), data["pt"])
 
 
@@ -1148,6 +1160,119 @@ def _extract_seccode(verify_data: dict) -> Optional[dict]:
     return None
 
 
+_ICON_MAPPING = {
+    "8da090c135ff029f3b5e19f4c44f73c8.png": "u",
+    "cb0eaa639b2117a69a81af3d8c1496a1.png": "d",
+    "315ce8665e781dabcd1eb09d3e604803.png": "l",
+    "38bd9dda695098c7dfad74c921923a7d.png": "lu",
+    "502e51dbabf411beba2dcd55fd38ebbd.png": "ld",
+    "2b2387f566f6a03ed594d4d7cfda471f.png": "r",
+    "78dc29045d587ad054c7353732df53c5.png": "ru",
+    "23ef93e6b0e0df0e15b66667c99a5fb4.png": "rd",
+}
+
+_ICON_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geetest_v4_icon.onnx")
+_ICON_CHARSETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "charsets.json")
+_ICON_STATIC_URL = "https://static.geevisit.com"
+_dddd_det = None
+_dddd_cnn = None
+_dddd_ocr = None
+
+
+def _ensure_dddd():
+    global _dddd_det, _dddd_cnn, _dddd_ocr
+    if _dddd_det is not None and _dddd_ocr is not None:
+        return
+    import ddddocr
+    _dddd_det = ddddocr.DdddOcr(det=True, show_ad=False)
+    _dddd_ocr = ddddocr.DdddOcr(show_ad=False)
+    if os.path.exists(_ICON_MODEL_PATH) and os.path.exists(_ICON_CHARSETS_PATH):
+        _dddd_cnn = ddddocr.DdddOcr(
+            det=False, ocr=False, show_ad=False,
+            import_onnx_path=_ICON_MODEL_PATH,
+            charsets_path=_ICON_CHARSETS_PATH,
+        )
+    else:
+        _dddd_cnn = _dddd_ocr
+
+
+class IconSolver:
+    """Solve GeeTest V4 icon/word captcha by matching question icons to grid positions.
+
+    Uses ddddocr detection to locate grid cells in the big image, then OCR to
+    classify each cell. Question icons are also OCR'd and matched against the
+    grid. Falls back to slide_match (template matching) when OCR returns empty.
+    """
+
+    def __init__(self, imgs_path: str, ques: list, http_get=None):
+        self.imgs_url = f"{_ICON_STATIC_URL}/{imgs_path}"
+        self.ques = ques
+        self._get = http_get or _default_icon_http_get
+        self.imgs_bytes = self._get(self.imgs_url)
+
+    def find_icon_position(self):
+        _ensure_dddd()
+        import cv2
+        import numpy as np
+
+        bboxes = _dddd_det.detection(self.imgs_bytes)
+        im = cv2.imdecode(np.frombuffer(self.imgs_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+        # OCR each grid cell
+        grid_texts = []
+        grid_centers = []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox
+            cell = im[y1:y2, x1:x2]
+            _, cell_bytes = cv2.imencode(".png", cell)
+            text = _dddd_ocr.classification(cell_bytes.tobytes())
+            grid_texts.append(text)
+            grid_centers.append([(x1 + (x2 - x1) / 2) * 33, (y1 + (y2 - y1) / 2) * 49])
+
+        # OCR each ques icon (composite on white to handle transparency)
+        ques_texts = []
+        for q in self.ques:
+            q_url = f"{_ICON_STATIC_URL}/{q}"
+            q_bytes = self._get(q_url)
+            q_img = cv2.imdecode(np.frombuffer(q_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            text = _dddd_ocr.classification(q_bytes)
+            if not text and q_img is not None and q_img.ndim == 3 and q_img.shape[2] == 4:
+                alpha = q_img[:, :, 3]
+                bgr = q_img[:, :, :3]
+                white_bg = np.ones_like(bgr) * 255
+                composited = np.where(alpha[:, :, np.newaxis] > 128, bgr, white_bg)
+                _, comp_bytes = cv2.imencode(".png", composited)
+                text = _dddd_ocr.classification(comp_bytes.tobytes())
+            ques_texts.append(text)
+
+        # Match ques to grid by text
+        results = []
+        used = set()
+        for qt in ques_texts:
+            matched = False
+            for i, gt in enumerate(grid_texts):
+                if gt and qt and gt == qt and i not in used:
+                    results.append(grid_centers[i])
+                    used.add(i)
+                    matched = True
+                    break
+            if not matched and grid_centers:
+                # Fallback: pick an unused cell randomly
+                available = [j for j in range(len(grid_centers)) if j not in used]
+                if available:
+                    pick = random.choice(available)
+                    results.append(grid_centers[pick])
+                    used.add(pick)
+
+        return results
+
+
+def _default_icon_http_get(url):
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    return resp.content
+
+
 class GeetestSolver:
     """Standalone GeeTest V4 solver with multi-round ``continue`` support.
 
@@ -1177,6 +1302,7 @@ class GeetestSolver:
         continuation_context: Optional[dict] = None
         current_challenge = str(uuid4())
         started_at = time.time()
+        continue_streak = 0
 
         for round_idx in range(max_attempts):
             if time.time() - started_at >= max_duration_seconds:
@@ -1215,14 +1341,30 @@ class GeetestSolver:
             if not isinstance(load_parsed, dict):
                 time.sleep(0.5 + random.random() * 0.25)
                 continue
-            data = (load_parsed.get("data") or {}).get("data") or {}
+            data = load_parsed.get("data") or {}
             if not data.get("lot_number") or not data.get("pow_detail") or not data.get("payload") or not data.get("process_token"):
                 time.sleep(0.5 + random.random() * 0.25)
                 continue
 
+            captcha_type = str(data.get("captcha_type") or self.risk_type).lower()
+            icon_positions = None
+            effective_risk = self.risk_type
+            if captcha_type in ("icon", "word") and data.get("imgs") and data.get("ques"):
+                try:
+                    solver_icon = IconSolver(
+                        data["imgs"], data["ques"], http_get=lambda u: self.session.get(u, timeout=15).content
+                    )
+                    icon_positions = solver_icon.find_icon_position()
+                    effective_risk = captcha_type
+                    print(f"[captcha] {captcha_type} solved positions: {icon_positions}")
+                except Exception as exc:
+                    print(f"[captcha] icon solve failed: {exc}")
+                    time.sleep(0.5 + random.random() * 0.25)
+                    continue
+
             constants = _GEETEST_CONSTANTS_CANDIDATES[round_idx % len(_GEETEST_CONSTANTS_CANDIDATES)]
             try:
-                w = _GeeSigner.generate_w(data, self.captcha_id, self.risk_type, constants=constants)
+                w = _GeeSigner.generate_w(data, self.captcha_id, effective_risk, constants=constants, icon_positions=icon_positions)
             except Exception:
                 time.sleep(0.5 + random.random() * 0.25)
                 continue
@@ -1233,7 +1375,7 @@ class GeetestSolver:
                 "captcha_id": self.captcha_id,
                 "client_type": "web",
                 "lot_number": data["lot_number"],
-                "risk_type": self.risk_type,
+                "risk_type": effective_risk,
                 "payload": data["payload"],
                 "process_token": data["process_token"],
                 "payload_protocol": "1",
@@ -1250,7 +1392,7 @@ class GeetestSolver:
             if not isinstance(verify_parsed, dict):
                 time.sleep(0.5 + random.random() * 0.25)
                 continue
-            verify_data = (verify_parsed.get("data") or {}).get("data") or {}
+            verify_data = verify_parsed.get("data") or {}
 
             if verify_data.get("result") == "success":
                 seccode = _extract_seccode(verify_data)
@@ -1260,17 +1402,32 @@ class GeetestSolver:
 
             result = str(verify_data.get("result", "")).lower()
             if result in ("continue", "continued"):
-                continuation_context = {
-                    "challenge": continuation_context["challenge"] if in_continuation else current_challenge,
-                    "lot_number": str(verify_data.get("lot_number") or data.get("lot_number") or ""),
-                    "payload": str(verify_data.get("payload") or data.get("payload") or ""),
-                    "process_token": str(verify_data.get("process_token") or data.get("process_token") or ""),
-                    "payload_protocol": str(verify_data.get("payload_protocol") or data.get("payload_protocol") or "1"),
-                    "pt": str(verify_data.get("pt") or data.get("pt") or "1"),
-                    "continuation_mode": True,
-                }
+                continue_streak += 1
+                # GeeTest may escalate to image captcha (nine/icon) after continue.
+                # Resetting the challenge gives a fresh chance at a direct success
+                # instead of getting stuck in image-captcha continuation loops.
+                if continue_streak >= 6:
+                    continuation_context = None
+                    continue_streak = 0
+                    current_challenge = str(uuid4())
+                    time.sleep(0.8 + random.random() * 0.5)
+                else:
+                    continuation_context = {
+                        "challenge": continuation_context["challenge"] if in_continuation else current_challenge,
+                        "lot_number": str(verify_data.get("lot_number") or data.get("lot_number") or ""),
+                        "payload": str(verify_data.get("payload") or data.get("payload") or ""),
+                        "process_token": str(verify_data.get("process_token") or data.get("process_token") or ""),
+                        "payload_protocol": str(verify_data.get("payload_protocol") or data.get("payload_protocol") or "1"),
+                        "pt": str(verify_data.get("pt") or data.get("pt") or "1"),
+                        "continuation_mode": True,
+                    }
+                    time.sleep(0.5 + random.random() * 0.3)
                 continue
 
+            # verify returned error or unknown result — reset challenge and retry
+            continuation_context = None
+            continue_streak = 0
+            current_challenge = str(uuid4())
             time.sleep(0.5 + random.random() * 0.25)
 
         raise RuntimeError("captcha solve exhausted all attempts without success")
@@ -1284,7 +1441,7 @@ def solve_captcha() -> Optional[dict]:
                 f"(id={CAPTCHA_ID}, risk={CAPTCHA_RISK_TYPE})"
             )
             solver = GeetestSolver(CAPTCHA_ID, CAPTCHA_RISK_TYPE)
-            result = solver.solve()
+            result = solver.solve(max_attempts=40, max_duration_seconds=150)
             if not result or not result.get("lot_number"):
                 raise RuntimeError(f"empty captcha result: {result}")
             print("[captcha] solved")
