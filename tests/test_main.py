@@ -442,5 +442,79 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("本次奖励", html)
 
 
+class CaptchaSolverTests(unittest.TestCase):
+    def _load_data(self):
+        return {
+            "lot_number": "lot123",
+            "payload": "load-payload",
+            "process_token": "load-token",
+            "pt": "1",
+            "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 8, "datetime": "1"},
+        }
+
+    def test_continue_result_is_treated_as_success(self):
+        solver = Mock()
+        solver.load_captcha.return_value = self._load_data()
+        verify = {
+            "result": "continue",
+            "score": "1",
+            "payload": "verify-payload",
+            "process_token": "verify-token",
+        }
+        solver.submit_captcha.side_effect = Exception(f"Failed to submit captcha: {verify}")
+
+        result = main._solve_geetest_v4(solver)
+
+        self.assertEqual(result["lot_number"], "lot123")
+        self.assertEqual(result["captcha_output"], "verify-payload")
+        self.assertEqual(result["pass_token"], "verify-token")
+        self.assertTrue(result["gen_time"])
+
+    def test_seccode_success_path(self):
+        solver = Mock()
+        solver.load_captcha.return_value = self._load_data()
+        solver.submit_captcha.return_value = {
+            "result": "success",
+            "seccode": {
+                "lot_number": "lot123",
+                "captcha_output": "seccode-out",
+                "pass_token": "seccode-token",
+                "gen_time": "9999",
+            },
+        }
+
+        result = main._solve_geetest_v4(solver)
+
+        self.assertEqual(result["captcha_output"], "seccode-out")
+        self.assertEqual(result["pass_token"], "seccode-token")
+        self.assertEqual(result["gen_time"], "9999")
+
+    def test_rejected_result_raises(self):
+        solver = Mock()
+        solver.load_captcha.return_value = self._load_data()
+        solver.submit_captcha.return_value = {"result": "fail", "score": "0"}
+
+        with self.assertRaises(RuntimeError):
+            main._solve_geetest_v4(solver)
+
+    def test_missing_lot_number_raises(self):
+        solver = Mock()
+        solver.load_captcha.return_value = {"payload": "x"}
+        with self.assertRaises(RuntimeError):
+            main._solve_geetest_v4(solver)
+
+    def test_falls_back_to_load_data_when_verify_unparseable(self):
+        solver = Mock()
+        load_data = self._load_data()
+        solver.load_captcha.return_value = load_data
+        solver.submit_captcha.side_effect = ValueError("network gone")
+
+        result = main._solve_geetest_v4(solver)
+
+        self.assertEqual(result["lot_number"], "lot123")
+        self.assertEqual(result["captcha_output"], "load-payload")
+        self.assertEqual(result["pass_token"], "load-token")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ import socket
 import smtplib
 import ssl
 import time
+import ast
 from dataclasses import dataclass
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -935,7 +936,7 @@ def solve_captcha() -> Optional[dict]:
                 f"(id={CAPTCHA_ID}, risk={CAPTCHA_RISK_TYPE})"
             )
             solver = Geeked(CAPTCHA_ID, CAPTCHA_RISK_TYPE)
-            result = solver.solve()
+            result = _solve_geetest_v4(solver)
             if not result or not result.get("lot_number"):
                 raise RuntimeError(f"empty captcha result: {result}")
             print("[captcha] solved")
@@ -945,6 +946,105 @@ def solve_captcha() -> Optional[dict]:
             if attempt < MAX_CAPTCHA_RETRIES:
                 time.sleep(2 * attempt)
     return None
+
+
+def _solve_geetest_v4(solver) -> dict:
+    """Drive GeeTest V4 load→verify and normalize the result for SSPanel login.
+
+    Upstream ``Geeked.solve()`` expects a ``seccode`` field from the ``/verify``
+    response, but for risk_type ``ai`` / ``invisible`` (passwordless flow used
+    by ikuuu) the verify endpoint returns ``{"result": "continue", "payload":
+    ..., "process_token": ...}`` with **no** ``seccode``. Upstream treats that
+    as a failure and raises. This wrapper drives load+verify directly and, when
+    the response indicates a successful continue/success result, maps the
+    GeeTest V4 fields onto the SSPanel ``captcha_result`` shape expected by the
+    login endpoint:
+
+      - lot_number     -> captcha_result[lot_number]
+      - payload        -> captcha_result[captcha_output]
+      - process_token  -> captcha_result[pass_token]
+      - gen_time       -> captcha_result[gen_time]  (server-provided, else now)
+    """
+    data = solver.load_captcha()
+    lot_number = data.get("lot_number")
+    if not lot_number:
+        raise RuntimeError(f"load_captcha returned no lot_number: {data}")
+
+    verify_resp: dict
+    try:
+        verify_resp = solver.submit_captcha(data)
+    except Exception as exc:
+        # submit_captcha raises when seccode is None. For ai/invisible risk
+        # types this is expected; recover the raw verify response carried in
+        # the exception message (dict repr) so we can still submit to SSPanel.
+        verify_resp = _extract_verify_dict(exc, data)
+
+    result_field = str(verify_resp.get("result", "")).lower()
+    has_seccode = bool(verify_resp.get("seccode"))
+
+    if result_field not in ("success", "continue") and not has_seccode:
+        raise RuntimeError(
+            f"verify rejected (result={verify_resp.get('result')!r}, "
+            f"score={verify_resp.get('score')!r})"
+        )
+
+    seccode = verify_resp.get("seccode") or {}
+    payload = (
+        seccode.get("captcha_output")
+        or verify_resp.get("payload")
+        or data.get("payload")
+        or ""
+    )
+    pass_token = (
+        seccode.get("pass_token")
+        or verify_resp.get("process_token")
+        or data.get("process_token")
+        or ""
+    )
+    gen_time = (
+        seccode.get("gen_time")
+        or verify_resp.get("gen_time")
+        or str(int(time.time()))
+    )
+
+    return {
+        "lot_number": lot_number,
+        "captcha_output": payload,
+        "pass_token": pass_token,
+        "gen_time": gen_time,
+    }
+
+
+def _extract_verify_dict(exc: Exception, load_data: dict) -> dict:
+    """Best-effort recovery of the verify response embedded in the upstream
+    'Failed to submit captcha: {...}' exception message."""
+    text = str(exc)
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        # If we cannot parse the verify response, fall back to load-stage data
+        # so login at least carries something rather than crashing.
+        return {
+            "result": "continue",
+            "payload": load_data.get("payload", ""),
+            "process_token": load_data.get("process_token", ""),
+        }
+    try:
+        parsed = ast.literal_eval(match.group(0))
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    try:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {
+        "result": "continue",
+        "payload": load_data.get("payload", ""),
+        "process_token": load_data.get("process_token", ""),
+    }
 
 
 def build_session() -> requests.Session:

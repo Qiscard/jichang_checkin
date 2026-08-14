@@ -409,10 +409,12 @@ python -B -m unittest discover -s tests -v
 **配置生成器核心功能：**
 
 - **多账号动态表单**：动态增删账号行，一行邮箱一行密码，对应 `CONFIG` 格式
-- **可折叠高级配置**：Server 酱、SMTP、Resend、MAIL_TO、Captcha ID、时区
-- **逐项 Secret 输出**：为 `CONFIG` / `URL` / `SCKEY` / `SMTP_SERVER` / `SMTP_ACCOUNT` / `MAIL_TO` / `RESEND_API_KEY` / `RESEND_FROM` / `CAPTCHA_ID` 分别生成带「复制」按钮的卡片
+- **可折叠高级配置**：Server 酱、SMTP（独立变量 `SMTP_HOST/PORT/USER/PASS/FROM`）、Resend、`MAIL_TO`、验证码（`CAPTCHA_ID`/`CAPTCHA_RISK_TYPE`）、时区（`CHECKIN_TIMEZONE`）、`REQUIRE_NOTIFICATION_SUCCESS`
+- **逐项输出**：为每个 Secret / Variable 生成带「复制」按钮的卡片，字段与 `main.py` 环境变量完全对齐，无重复无遗漏
 - **一键跳转 GitHub Secrets**：输入 `owner/repo`，跳转到 `https://github.com/{owner}/{repo}/settings/secrets/actions`
 - **本地持久化**：所有输入实时保存到 `localStorage`，刷新不丢失；数据仅在浏览器本地处理，不上传任何服务器
+
+> 字段对齐说明：生成器采用**独立 SMTP 变量**方式（`SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `MAIL_TO`），与 GitHub Actions 日志中实际使用的配置一致。`main.py` 同时兼容分组式 `SMTP_SERVER` / `SMTP_ACCOUNT`，但生成器不再引导该方式以避免混淆。
 
 **访问方式：**
 - 本地：双击 `index.html`（自动跳转）或直接打开 `config_generator.html`

@@ -152,31 +152,51 @@
         <div class="adv-toggle" id="advToggle" onclick="toggleAdvanced()">
           <div>
             <div class="title">通知与高级配置</div>
-            <div class="sub">Server 酱、邮件 SMTP / Resend、时区等（可选）</div>
+            <div class="sub">Server 酱、邮件 SMTP / Resend、验证码、时区等（可选）</div>
           </div>
           <span class="chev">▸</span>
         </div>
         <div class="adv-body" id="advBody">
 
+          <div class="field">
+            <label>Server 酱 SCKEY <span class="opt">（可选）</span></label>
+            <input id="sckey" type="text" placeholder="SCT...">
+            <div class="hint">Server 酱推送密钥，不填则不通过 Server 酱推送。</div>
+          </div>
+
           <div class="two-col">
             <div class="field">
-              <label>Server 酱 SCKEY <span class="opt">（可选）</span></label>
-              <input id="sckey" type="text" placeholder="SCT...">
+              <label>SMTP 主机 SMTP_HOST <span class="opt">（可选）</span></label>
+              <input id="smtpHost" type="text" placeholder="smtp.qq.com">
             </div>
             <div class="field">
-              <label>签到时区 <span class="opt">（可选）</span></label>
-              <input id="tz" type="text" placeholder="Asia/Shanghai">
+              <label>SMTP 端口 SMTP_PORT <span class="opt">（可选）</span></label>
+              <input id="smtpPort" type="text" placeholder="465">
+              <div class="hint">465 = SSL，587 = STARTTLS</div>
             </div>
           </div>
 
           <div class="two-col">
             <div class="field">
-              <label>SMTP 服务器 <span class="opt">（可选）</span></label>
-              <input id="smtpServer" type="text" placeholder="smtp.qq.com:465:ssl">
+              <label>SMTP 账号 SMTP_USER <span class="opt">（可选）</span></label>
+              <input id="smtpUser" type="text" placeholder="你的QQ邮箱">
             </div>
             <div class="field">
-              <label>SMTP 账号 <span class="opt">（可选）</span></label>
-              <input id="smtpAccount" type="text" placeholder="user&#10;pass&#10;mail_to">
+              <label>SMTP 授权码 SMTP_PASS <span class="opt">（可选）</span></label>
+              <input id="smtpPass" type="text" placeholder="QQ邮箱授权码">
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label>SMTP 发件人 SMTP_FROM <span class="opt">（可选）</span></label>
+              <input id="smtpFrom" type="text" placeholder="同 SMTP_USER">
+              <div class="hint">不填默认使用 SMTP_USER</div>
+            </div>
+            <div class="field">
+              <label>邮件收件人 MAIL_TO <span class="opt">（可选）</span></label>
+              <input id="mailTo" type="text" placeholder="a@x.com,b@x.com">
+              <div class="hint">多个地址用英文逗号分隔</div>
             </div>
           </div>
 
@@ -186,19 +206,33 @@
               <input id="resendKey" type="text" placeholder="re_xxxxx">
             </div>
             <div class="field">
-              <label>Resend 发件人 <span class="opt">（可选）</span></label>
+              <label>Resend 发件人 RESEND_FROM <span class="opt">（可选）</span></label>
               <input id="resendFrom" type="text" placeholder="onboarding@resend.dev">
             </div>
           </div>
 
           <div class="two-col">
             <div class="field">
-              <label>邮件收件人 MAIL_TO <span class="opt">（可选）</span></label>
-              <input id="mailTo" type="text" placeholder="a@x.com,b@x.com">
+              <label>验证码类型 CAPTCHA_RISK_TYPE <span class="opt">（高级）</span></label>
+              <input id="captchaRisk" type="text" placeholder="ai">
+              <div class="hint">ai=无感验证（默认），slide=滑块，invisible=隐藏</div>
             </div>
             <div class="field">
-              <label>验证码 Captcha ID <span class="opt">（高级）</span></label>
+              <label>验证码 ID CAPTCHA_ID <span class="opt">（高级）</span></label>
               <input id="captchaId" type="text" placeholder="cc96d05ba8b60f9112f76e18526fcb73">
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label>签到时区 CHECKIN_TIMEZONE <span class="opt">（Variable）</span></label>
+              <input id="tz" type="text" placeholder="Asia/Shanghai">
+              <div class="hint">IANA 时区，用于判断“今天”</div>
+            </div>
+            <div class="field">
+              <label>通知失败即报错 REQUIRE_NOTIFICATION_SUCCESS <span class="opt">（Variable）</span></label>
+              <input id="reqNotify" type="text" placeholder="false">
+              <div class="hint">true 时所有通知失败则任务退出失败</div>
             </div>
           </div>
 
@@ -251,18 +285,42 @@
         </div>
 
         <div class="out-section">
-          <div class="out-head"><div><div class="out-name"><code>SMTP_SERVER</code></div><div class="out-desc">SMTP 服务器配置</div></div></div>
+          <div class="out-head"><div><div class="out-name"><code>SMTP_HOST</code></div><div class="out-desc">SMTP 服务器主机</div></div></div>
           <div class="out-box">
-            <textarea class="out" id="out-smtp-server" readonly></textarea>
-            <button class="copy-btn" onclick="copyText('out-smtp-server', this)">复制</button>
+            <textarea class="out" id="out-smtp-host" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-host', this)">复制</button>
           </div>
         </div>
 
         <div class="out-section">
-          <div class="out-head"><div><div class="out-name"><code>SMTP_ACCOUNT</code></div><div class="out-desc">SMTP 账号密码收件人</div></div></div>
+          <div class="out-head"><div><div class="out-name"><code>SMTP_PORT</code></div><div class="out-desc">SMTP 端口（465=SSL，587=STARTTLS）</div></div></div>
           <div class="out-box">
-            <textarea class="out" id="out-smtp-account" readonly></textarea>
-            <button class="copy-btn" onclick="copyText('out-smtp-account', this)">复制</button>
+            <textarea class="out" id="out-smtp-port" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-port', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SMTP_USER</code></div><div class="out-desc">SMTP 登录账号</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-smtp-user" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-user', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SMTP_PASS</code></div><div class="out-desc">SMTP 授权码</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-smtp-pass" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-pass', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SMTP_FROM</code></div><div class="out-desc">SMTP 发件人（可空，默认 SMTP_USER）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-smtp-from" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-from', this)">复制</button>
           </div>
         </div>
 
@@ -295,6 +353,30 @@
           <div class="out-box">
             <textarea class="out" id="out-captcha-id" readonly></textarea>
             <button class="copy-btn" onclick="copyText('out-captcha-id', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>CAPTCHA_RISK_TYPE</code></div><div class="out-desc">验证码类型（ai/slide/invisible）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-captcha-risk" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-captcha-risk', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>CHECKIN_TIMEZONE</code> <span class="opt">Variable</span></div><div class="out-desc">签到时区（Actions Variable）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-tz" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-tz', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>REQUIRE_NOTIFICATION_SUCCESS</code> <span class="opt">Variable</span></div><div class="out-desc">通知全失败时任务退出失败（Actions Variable）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-req-notify" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-req-notify', this)">复制</button>
           </div>
         </div>
 
@@ -397,12 +479,18 @@ function generateConfig(){
   setOut('out-config', configText);
   setOut('out-url', val('url'));
   setOut('out-sckey', val('sckey'));
-  setOut('out-smtp-server', val('smtpServer'));
-  setOut('out-smtp-account', val('smtpAccount'));
+  setOut('out-smtp-host', val('smtpHost'));
+  setOut('out-smtp-port', val('smtpPort'));
+  setOut('out-smtp-user', val('smtpUser'));
+  setOut('out-smtp-pass', val('smtpPass'));
+  setOut('out-smtp-from', val('smtpFrom'));
   setOut('out-mailto', val('mailTo'));
   setOut('out-resend-key', val('resendKey'));
   setOut('out-resend-from', val('resendFrom'));
   setOut('out-captcha-id', val('captchaId'));
+  setOut('out-captcha-risk', val('captchaRisk'));
+  setOut('out-tz', val('tz'));
+  setOut('out-req-notify', val('reqNotify'));
 
   autoSave();
   showToast('✅ 配置已生成');
@@ -446,9 +534,12 @@ function jumpToSecrets(){
 function autoSave(){
   const data = {
     url: val('url'), sckey: val('sckey'), tz: val('tz'),
-    smtpServer: val('smtpServer'), smtpAccount: val('smtpAccount'),
+    smtpHost: val('smtpHost'), smtpPort: val('smtpPort'),
+    smtpUser: val('smtpUser'), smtpPass: val('smtpPass'),
+    smtpFrom: val('smtpFrom'), mailTo: val('mailTo'),
     resendKey: val('resendKey'), resendFrom: val('resendFrom'),
-    mailTo: val('mailTo'), captchaId: val('captchaId'),
+    captchaId: val('captchaId'), captchaRisk: val('captchaRisk'),
+    reqNotify: val('reqNotify'),
     repo: val('repoInput'),
     accounts: getAccounts(),
     advOpen: document.getElementById('advBody').classList.contains('open')
@@ -466,12 +557,17 @@ function loadSaved(){
   document.getElementById('url').value = data.url || '';
   document.getElementById('sckey').value = data.sckey || '';
   document.getElementById('tz').value = data.tz || '';
-  document.getElementById('smtpServer').value = data.smtpServer || '';
-  document.getElementById('smtpAccount').value = data.smtpAccount || '';
+  document.getElementById('smtpHost').value = data.smtpHost || '';
+  document.getElementById('smtpPort').value = data.smtpPort || '';
+  document.getElementById('smtpUser').value = data.smtpUser || '';
+  document.getElementById('smtpPass').value = data.smtpPass || '';
+  document.getElementById('smtpFrom').value = data.smtpFrom || '';
+  document.getElementById('mailTo').value = data.mailTo || '';
   document.getElementById('resendKey').value = data.resendKey || '';
   document.getElementById('resendFrom').value = data.resendFrom || '';
-  document.getElementById('mailTo').value = data.mailTo || '';
   document.getElementById('captchaId').value = data.captchaId || '';
+  document.getElementById('captchaRisk').value = data.captchaRisk || '';
+  document.getElementById('reqNotify').value = data.reqNotify || '';
   document.getElementById('repoInput').value = data.repo || 'bighammer-link/jichang_checkin';
   if(data.advOpen){
     document.getElementById('advToggle').classList.add('open');
