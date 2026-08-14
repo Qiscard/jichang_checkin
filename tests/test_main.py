@@ -443,77 +443,108 @@ class NotificationTests(unittest.TestCase):
 
 
 class CaptchaSolverTests(unittest.TestCase):
-    def _load_data(self):
-        return {
-            "lot_number": "lot123",
-            "payload": "load-payload",
-            "process_token": "load-token",
-            "pt": "1",
-            "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 8, "datetime": "1"},
-        }
-
-    def test_continue_result_is_treated_as_success(self):
-        solver = Mock()
-        solver.load_captcha.return_value = self._load_data()
-        verify = {
-            "result": "continue",
-            "score": "1",
-            "payload": "verify-payload",
-            "process_token": "verify-token",
-        }
-        solver.submit_captcha.side_effect = Exception(f"Failed to submit captcha: {verify}")
-
-        result = main._solve_geetest_v4(solver)
-
-        self.assertEqual(result["lot_number"], "lot123")
-        self.assertEqual(result["captcha_output"], "verify-payload")
-        self.assertEqual(result["pass_token"], "verify-token")
-        self.assertTrue(result["gen_time"])
-
-    def test_seccode_success_path(self):
-        solver = Mock()
-        solver.load_captcha.return_value = self._load_data()
-        solver.submit_captcha.return_value = {
+    def test_extract_seccode_from_seccode_dict(self):
+        verify_data = {
             "result": "success",
             "seccode": {
-                "lot_number": "lot123",
-                "captcha_output": "seccode-out",
-                "pass_token": "seccode-token",
-                "gen_time": "9999",
+                "lot_number": "lot1",
+                "captcha_output": "out1",
+                "pass_token": "token1",
+                "gen_time": "1234",
             },
         }
+        result = main._extract_seccode(verify_data)
+        self.assertEqual(result["lot_number"], "lot1")
+        self.assertEqual(result["captcha_output"], "out1")
+        self.assertEqual(result["pass_token"], "token1")
+        self.assertEqual(result["gen_time"], "1234")
 
-        result = main._solve_geetest_v4(solver)
+    def test_extract_seccode_from_flat_fields(self):
+        verify_data = {
+            "result": "success",
+            "lot_number": "lot2",
+            "captcha_output": "out2",
+            "pass_token": "token2",
+            "gen_time": "5678",
+        }
+        result = main._extract_seccode(verify_data)
+        self.assertEqual(result["captcha_output"], "out2")
+        self.assertEqual(result["pass_token"], "token2")
 
-        self.assertEqual(result["captcha_output"], "seccode-out")
-        self.assertEqual(result["pass_token"], "seccode-token")
-        self.assertEqual(result["gen_time"], "9999")
+    def test_extract_seccode_returns_none_when_missing(self):
+        self.assertIsNone(main._extract_seccode({"result": "fail"}))
+        self.assertIsNone(main._extract_seccode({}))
 
-    def test_rejected_result_raises(self):
-        solver = Mock()
-        solver.load_captcha.return_value = self._load_data()
-        solver.submit_captcha.return_value = {"result": "fail", "score": "0"}
+    def test_parse_jsonp_standard(self):
+        raw = 'geetest_123({"status":"success","data":{"data":{"result":"success"}}})'
+        result = main._parse_jsonp(raw, "geetest_123")
+        self.assertEqual(result["status"], "success")
 
+    def test_parse_jsonp_with_semicolon(self):
+        raw = 'cb({"data":{"data":{}}});'
+        result = main._parse_jsonp(raw, "cb")
+        self.assertIn("data", result)
+
+    def test_generate_w_produces_nonempty_string(self):
+        data = {
+            "lot_number": "1234567890123456789012345678901234567890",
+            "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"},
+            "pt": "1",
+        }
+        w = main._GeeSigner.generate_w(data, "test_captcha_id", "ai")
+        self.assertIsInstance(w, str)
+        self.assertTrue(len(w) > 50)
+
+    def _make_fake_get(self, load_payload, verify_payload):
+        import json as _json
+        def fake_get(url, params, timeout=15):
+            cb = params.get("callback", "cb")
+            if "/load" in url:
+                return Mock(text=cb + "(" + _json.dumps(load_payload) + ")")
+            return Mock(text=cb + "(" + _json.dumps(verify_payload) + ")")
+        return fake_get
+
+    def test_solve_success_on_first_verify(self):
+        solver = main.GeetestSolver("cid", "ai")
+        lot = "a1b2c3d4e5f6789012345678abcdef01"
+        load_payload = {"data": {"data": {"lot_number": lot, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}}
+        verify_payload = {"data": {"data": {"result": "success", "seccode": {"lot_number": lot, "captcha_output": "out", "pass_token": "tok", "gen_time": "99"}}}}
+        solver._get = self._make_fake_get(load_payload, verify_payload)
+        result = solver.solve(max_attempts=3, max_duration_seconds=10)
+        self.assertEqual(result["lot_number"], lot)
+        self.assertEqual(result["captcha_output"], "out")
+
+    def test_solve_loops_on_continue_then_success(self):
+        solver = main.GeetestSolver("cid", "ai")
+        lot1 = "a1b2c3d4e5f6789012345678abcdef01"
+        lot2 = "b2c3d4e5f6789012345678abcdef012"
+        import json as _json
+
+        load1 = {"data": {"data": {"lot_number": lot1, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p1", "process_token": "t1", "pt": "1"}}}
+        verify1 = {"data": {"data": {"result": "continue", "lot_number": lot2, "payload": "p2", "process_token": "t2", "pt": "1", "payload_protocol": "1"}}}
+        load2 = {"data": {"data": {"lot_number": lot2, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p2", "process_token": "t2", "pt": "1"}}}
+        verify2 = {"data": {"data": {"result": "success", "seccode": {"lot_number": lot2, "captcha_output": "out2", "pass_token": "tok2", "gen_time": "88"}}}}
+
+        responses = [load1, verify1, load2, verify2]
+
+        def fake_get(url, params, timeout=15):
+            cb = params.get("callback", "cb")
+            payload = responses.pop(0)
+            return Mock(text=cb + "(" + _json.dumps(payload) + ")")
+
+        solver._get = fake_get
+        result = solver.solve(max_attempts=10, max_duration_seconds=30)
+        self.assertEqual(result["lot_number"], lot2)
+        self.assertEqual(result["captcha_output"], "out2")
+
+    def test_solve_raises_when_exhausted(self):
+        solver = main.GeetestSolver("cid", "ai")
+        lot = "a1b2c3d4e5f6789012345678abcdef01"
+        load_payload = {"data": {"data": {"lot_number": lot, "pow_detail": {"hashfunc": "md5", "version": 1, "bits": 4, "datetime": "1"}, "payload": "p", "process_token": "t", "pt": "1"}}}
+        verify_payload = {"data": {"data": {"result": "continue", "lot_number": lot, "payload": "p", "process_token": "t", "pt": "1"}}}
+        solver._get = self._make_fake_get(load_payload, verify_payload)
         with self.assertRaises(RuntimeError):
-            main._solve_geetest_v4(solver)
-
-    def test_missing_lot_number_raises(self):
-        solver = Mock()
-        solver.load_captcha.return_value = {"payload": "x"}
-        with self.assertRaises(RuntimeError):
-            main._solve_geetest_v4(solver)
-
-    def test_falls_back_to_load_data_when_verify_unparseable(self):
-        solver = Mock()
-        load_data = self._load_data()
-        solver.load_captcha.return_value = load_data
-        solver.submit_captcha.side_effect = ValueError("network gone")
-
-        result = main._solve_geetest_v4(solver)
-
-        self.assertEqual(result["lot_number"], "lot123")
-        self.assertEqual(result["captcha_output"], "load-payload")
-        self.assertEqual(result["pass_token"], "load-token")
+            solver.solve(max_attempts=2, max_duration_seconds=5)
 
 
 if __name__ == "__main__":

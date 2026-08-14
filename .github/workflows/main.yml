@@ -30,42 +30,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Fail fast when a transitive dep (e.g. typing_extensions for
-          # curl_cffi) is missing, instead of crashing at runtime.
-          python -c "import requests, curl_cffi, Crypto; import typing_extensions; print('deps ok')"
+          python -c "import requests, Crypto; print('deps ok')"
 
       - name: Run offline tests
         run: python -B -m unittest discover -s tests -v
-
-      - name: Vendor GeekedTest captcha solver
-        run: |
-          set -e
-          GEEKED_COMMIT=93a81933d8e8752cfedb94a008a71faf76cf322c
-          git init -q temp_geeked
-          git -C temp_geeked remote add origin https://github.com/xKiian/GeekedTest.git
-          git -C temp_geeked fetch --depth 1 origin "$GEEKED_COMMIT"
-          git -C temp_geeked checkout -q --detach FETCH_HEAD
-          python - <<'PY'
-          from pathlib import Path
-          path = Path("temp_geeked/geeked/sign.py")
-          code = path.read_text(encoding="utf-8")
-          replacements = {
-              "from geeked.slide import SlideSolver": "SlideSolver = None",
-              "from geeked.gobang import GobangSolver": "GobangSolver = None",
-              "from geeked.icon import IconSolver": "IconSolver = None",
-          }
-          for old, new in replacements.items():
-              if code.count(old) != 1:
-                  raise RuntimeError(f"Unexpected GeekedTest source; missing exact import: {old}")
-              code = code.replace(old, new)
-          path.write_text(code, encoding="utf-8")
-          PY
-          rm -rf geeked
-          mv temp_geeked/geeked ./geeked
-          rm -rf temp_geeked
-          # Smoke-test the vendored solver import so a broken geeked build
-          # surfaces here instead of mid-run.
-          python -c "from geeked import Geeked; print('geeked import ok')"
 
       - name: Run checkin
         env:

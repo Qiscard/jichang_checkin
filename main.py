@@ -5,14 +5,16 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 import json
 import os
+import random
 import re
 import socket
 import smtplib
 import ssl
 import time
-import ast
 from dataclasses import dataclass
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -20,10 +22,14 @@ from email.mime.text import MIMEText
 from html import escape
 from html.parser import HTMLParser
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey.RSA import construct
+from Crypto.Util.Padding import pad
 
 DEFAULT_URL = "https://ikuuu.win"
 DEFAULT_CAPTCHA_ID = "cc96d05ba8b60f9112f76e18526fcb73"
@@ -910,33 +916,363 @@ def notify(title: str, plain_content: str, markdown_content: str, html_content: 
     return results
 
 
-def solve_captcha() -> Optional[dict]:
-    try:
-        from geeked import Geeked  # type: ignore
-    except Exception as exc:
-        # Surface the most common root causes explicitly so the CI failure
-        # (ModuleNotFoundError: typing_extensions) is self-explanatory instead
-        # of a bare traceback at import time.
-        msg = str(exc)
-        hint = ""
-        if "typing_extensions" in msg or "Unpack" in msg:
-            hint = (
-                " | Hint: curl_cffi needs typing_extensions. "
-                "Run: pip install -r requirements.txt"
-            )
-        elif "curl_cffi" in msg or "cffi" in msg:
-            hint = " | Hint: curl_cffi not installed; check requirements.txt"
-        print(f"[captcha] Geeked not available: {exc}{hint}")
-        return None
+class _LotParser:
+    def __init__(self, mapping: Optional[Dict[str, str]] = None):
+        self.mapping = mapping or {"n[3:5]+n[9:11]": "n[7:12]"}
+        self.lot: List = []
+        self.lot_res: List = []
+        for k, v in self.mapping.items():
+            self.lot = self._parse(k)
+            self.lot_res = self._parse(v)
 
+    @staticmethod
+    def _parse_slice(s: str):
+        return [int(x) for x in s.split(":")]
+
+    @staticmethod
+    def _extract(part: str):
+        res = re.search(r"\[(.*?)\]", part)
+        return res.group(1) if res else ""
+
+    def _parse(self, s: str):
+        parts = s.split("+.+")
+        parsed = []
+        for part in parts:
+            if "+" in part:
+                subs = part.split("+")
+                parsed_subs = [self._parse_slice(self._extract(sub)) for sub in subs]
+                parsed.append(parsed_subs)
+            else:
+                extracted = self._extract(part)
+                if extracted:
+                    parsed.append([self._parse_slice(extracted)])
+        return parsed
+
+    @staticmethod
+    def _build_str(parsed, num: str):
+        result = []
+        for p in parsed:
+            current = []
+            for s in p:
+                start = s[0]
+                end = s[1] + 1 if len(s) > 1 else start + 1
+                current.append(num[start:end])
+            result.append("".join(current))
+        return ".".join(result)
+
+    def get_dict(self, lot_number: str) -> dict:
+        i = self._build_str(self.lot, lot_number)
+        r = self._build_str(self.lot_res, lot_number)
+        parts = i.split(".")
+        a: dict = {}
+        current = a
+        for idx, part in enumerate(parts):
+            if idx == len(parts) - 1:
+                current[part] = r
+            else:
+                current[part] = current.get(part, {})
+                current = current[part]
+        return a
+
+
+class _GeeSigner:
+    encryptor_pubkey = construct(
+        (
+            int(
+                "00C1E3934D1614465B33053E7F48EE4EC87B14B95EF88947713D25EECBFF7E74C7977D02DC1D9451F79DD5D1C10C29ACB6A9B4D6FB7D0A0279B6719E1772565F09AF627715919221AEF91899CAE08C0D686D748B20A3603BE2318CA6BC2B59706592A9219D0BF05C9F65023A21D2330807252AE0066D59CEEFA5F2748EA80BAB81".lower(),
+                16,
+            ),
+            int("10001", 16),
+        )
+    )
+
+    @staticmethod
+    def rand_uid() -> str:
+        result = ""
+        for _ in range(4):
+            result += hex(int(65536 * (1 + random.random())))[2:].zfill(4)[-4:]
+        return result
+
+    @staticmethod
+    def encrypt_symmetrical_1(o_text: str, random_str: str) -> bytes:
+        key = random_str.encode("utf-8")
+        iv = b"0000000000000000"
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        return cipher.encrypt(pad(o_text.encode("utf-8"), AES.block_size))
+
+    @staticmethod
+    def encrypt_asymmetric_1(message: str) -> str:
+        message_bytes = message.encode("utf-8")
+        cipher = PKCS1_v1_5.new(_GeeSigner.encryptor_pubkey)
+        encrypted_bytes = cipher.encrypt(message_bytes)
+        return binascii.hexlify(encrypted_bytes).decode("utf-8")
+
+    @staticmethod
+    def encrypt_w(raw_input: str, pt: str) -> str:
+        if not pt or "0" == pt:
+            return quote_plus(raw_input)
+        random_uid = _GeeSigner.rand_uid()
+        if pt == "1":
+            enc_key = _GeeSigner.encrypt_asymmetric_1(random_uid)
+            enc_input = _GeeSigner.encrypt_symmetrical_1(raw_input, random_uid)
+            return binascii.hexlify(enc_input).decode() + enc_key
+        raise NotImplementedError("Encryption pt != 1 not implemented")
+
+    @staticmethod
+    def generate_pow(
+        lot_number_pow: str,
+        captcha_id_pow: str,
+        hash_func: str,
+        hash_version: int,
+        bits: int,
+        date: str,
+        empty: str,
+    ) -> dict:
+        bit_remainder = bits % 4
+        bit_division = bits // 4
+        prefix = "0" * bit_division
+        pow_string = f"{hash_version}|{bits}|{hash_func}|{date}|{captcha_id_pow}|{lot_number_pow}|{empty}|"
+        while True:
+            h = _GeeSigner.rand_uid()
+            combined = pow_string + h
+            if hash_func == "md5":
+                hashed_value = hashlib.md5(combined.encode("utf-8")).hexdigest()
+            elif hash_func == "sha1":
+                hashed_value = hashlib.sha1(combined.encode("utf-8")).hexdigest()
+            elif hash_func == "sha256":
+                hashed_value = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+            else:
+                raise ValueError(f"Unsupported hash function: {hash_func}")
+            if hashed_value.startswith(prefix):
+                if bit_remainder == 0:
+                    return {"pow_msg": pow_string + h, "pow_sign": hashed_value}
+                threshold = {1: 7, 2: 3, 3: 1}.get(bit_remainder)
+                if threshold is not None and len(prefix) <= threshold:
+                    return {"pow_msg": pow_string + h, "pow_sign": hashed_value}
+
+    @staticmethod
+    def generate_w(
+        data: dict, captcha_id: str, risk_type: str, constants: Optional[dict] = None
+    ) -> str:
+        constants = constants or {
+            "abo": {"1a8R": "daC2"},
+            "mapping": {"n[3:5]+n[9:11]": "n[7:12]"},
+        }
+        lot_number = data["lot_number"]
+        pow_detail = data["pow_detail"]
+        parser = _LotParser(constants["mapping"])
+        base = {
+            **constants["abo"],
+            **_GeeSigner.generate_pow(
+                lot_number,
+                captcha_id,
+                pow_detail["hashfunc"],
+                pow_detail["version"],
+                pow_detail["bits"],
+                pow_detail["datetime"],
+                "",
+            ),
+            **parser.get_dict(lot_number),
+            "biht": "1426265548",
+            "device_id": "",
+            "em": {"cp": 0, "ek": "11", "nt": 0, "ph": 0, "sc": 0, "si": 0, "wd": 1},
+            "gee_guard": {
+                "roe": {
+                    "auh": "3", "aup": "3", "cdc": "3", "egp": "3",
+                    "res": "3", "rew": "3", "sep": "3", "snh": "3",
+                }
+            },
+            "ep": "123",
+            "geetest": "captcha",
+            "lang": "zh",
+            "lot_number": lot_number,
+        }
+        return _GeeSigner.encrypt_w(json.dumps(base), data["pt"])
+
+
+_GEETEST_CONSTANTS_CANDIDATES = [
+    {
+        "label": "legacy",
+        "abo": {"1a8R": "daC2"},
+        "mapping": {"n[3:5]+n[9:11]": "n[7:12]"},
+    },
+    {
+        "label": "alt",
+        "abo": {"4MTT": "0Qh0"},
+        "mapping": {"(n[19:24])+.+(n[23:30])+.+(n[5:12])": "n[14:19]"},
+    },
+]
+
+
+def _geetest_callback() -> str:
+    return f"geetest_{int(random.random() * 10000) + int(time.time() * 1000)}"
+
+
+def _parse_jsonp(raw: str, callback: str) -> dict:
+    prefix = f"{callback}("
+    text = raw.strip()
+    if not text.startswith(prefix):
+        raise ValueError(f"Unexpected JSONP response: {text[:120]}")
+    if text.endswith(");"):
+        payload = text[len(prefix):-2]
+    elif text.endswith(")"):
+        payload = text[len(prefix):-1]
+    else:
+        payload = text[len(prefix):]
+    return json.loads(payload)
+
+
+def _extract_seccode(verify_data: dict) -> Optional[dict]:
+    seccode = verify_data.get("seccode")
+    if isinstance(seccode, dict):
+        return seccode
+    if all(k in verify_data for k in ("lot_number", "captcha_output", "pass_token", "gen_time")):
+        return {
+            "lot_number": str(verify_data["lot_number"]),
+            "captcha_output": str(verify_data["captcha_output"]),
+            "pass_token": str(verify_data["pass_token"]),
+            "gen_time": str(verify_data["gen_time"]),
+        }
+    return None
+
+
+class GeetestSolver:
+    """Standalone GeeTest V4 solver with multi-round ``continue`` support.
+
+    Unlike the upstream ``geeked`` library, this implementation:
+      - uses the correct ``abo``/``mapping`` obfuscation constants for ikuuu
+        (the upstream constants are wrong and cause GeeTest to reject ``w``)
+      - loops the load→verify cycle when ``result == "continue"`` is returned,
+        resubmitting with the new payload/process_token until ``result ==
+        "success"`` yields a ``seccode``
+    """
+
+    BASE_URL = "https://gcaptcha4.geevisit.com"
+
+    def __init__(self, captcha_id: str, risk_type: str = "ai"):
+        self.captcha_id = captcha_id
+        self.risk_type = risk_type
+        self.session = requests.Session()
+        self.session.headers.update({
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        })
+
+    def _get(self, url: str, params: dict, timeout: int = 15):
+        return self.session.get(url, params=params, timeout=timeout)
+
+    def solve(self, max_attempts: int = 30, max_duration_seconds: int = 180) -> dict:
+        continuation_context: Optional[dict] = None
+        current_challenge = str(uuid4())
+        started_at = time.time()
+
+        for round_idx in range(max_attempts):
+            if time.time() - started_at >= max_duration_seconds:
+                break
+
+            in_continuation = (
+                continuation_context is not None
+                and continuation_context.get("continuation_mode") is True
+            )
+            if not in_continuation:
+                current_challenge = str(uuid4())
+
+            callback = _geetest_callback()
+            params = {
+                "captcha_id": self.captcha_id,
+                "challenge": continuation_context["challenge"] if in_continuation else current_challenge,
+                "client_type": "web",
+                "risk_type": self.risk_type,
+                "lang": "zh",
+                "callback": callback,
+            }
+            if in_continuation:
+                params["lot_number"] = continuation_context["lot_number"]
+                params["payload"] = continuation_context["payload"]
+                params["process_token"] = continuation_context["process_token"]
+                params["payload_protocol"] = continuation_context.get("payload_protocol", "1")
+                params["pt"] = continuation_context.get("pt", "1")
+
+            res = self._get(f"{self.BASE_URL}/load", params=params)
+            try:
+                load_parsed = _parse_jsonp(res.text, callback)
+            except Exception:
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+
+            if not isinstance(load_parsed, dict):
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+            data = (load_parsed.get("data") or {}).get("data") or {}
+            if not data.get("lot_number") or not data.get("pow_detail") or not data.get("payload") or not data.get("process_token"):
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+
+            constants = _GEETEST_CONSTANTS_CANDIDATES[round_idx % len(_GEETEST_CONSTANTS_CANDIDATES)]
+            try:
+                w = _GeeSigner.generate_w(data, self.captcha_id, self.risk_type, constants=constants)
+            except Exception:
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+
+            callback = _geetest_callback()
+            verify_params = {
+                "callback": callback,
+                "captcha_id": self.captcha_id,
+                "client_type": "web",
+                "lot_number": data["lot_number"],
+                "risk_type": self.risk_type,
+                "payload": data["payload"],
+                "process_token": data["process_token"],
+                "payload_protocol": "1",
+                "pt": data.get("pt", "1"),
+                "w": w,
+            }
+            res = self._get(f"{self.BASE_URL}/verify", params=verify_params)
+            try:
+                verify_parsed = _parse_jsonp(res.text, callback)
+            except Exception:
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+
+            if not isinstance(verify_parsed, dict):
+                time.sleep(0.5 + random.random() * 0.25)
+                continue
+            verify_data = (verify_parsed.get("data") or {}).get("data") or {}
+
+            if verify_data.get("result") == "success":
+                seccode = _extract_seccode(verify_data)
+                if seccode:
+                    return seccode
+                raise RuntimeError(f"Geetest success without seccode: {verify_data}")
+
+            result = str(verify_data.get("result", "")).lower()
+            if result in ("continue", "continued"):
+                continuation_context = {
+                    "challenge": continuation_context["challenge"] if in_continuation else current_challenge,
+                    "lot_number": str(verify_data.get("lot_number") or data.get("lot_number") or ""),
+                    "payload": str(verify_data.get("payload") or data.get("payload") or ""),
+                    "process_token": str(verify_data.get("process_token") or data.get("process_token") or ""),
+                    "payload_protocol": str(verify_data.get("payload_protocol") or data.get("payload_protocol") or "1"),
+                    "pt": str(verify_data.get("pt") or data.get("pt") or "1"),
+                    "continuation_mode": True,
+                }
+                continue
+
+            time.sleep(0.5 + random.random() * 0.25)
+
+        raise RuntimeError("captcha solve exhausted all attempts without success")
+
+
+def solve_captcha() -> Optional[dict]:
     for attempt in range(1, MAX_CAPTCHA_RETRIES + 1):
         try:
             print(
                 f"[captcha] solve attempt {attempt}/{MAX_CAPTCHA_RETRIES} "
                 f"(id={CAPTCHA_ID}, risk={CAPTCHA_RISK_TYPE})"
             )
-            solver = Geeked(CAPTCHA_ID, CAPTCHA_RISK_TYPE)
-            result = _solve_geetest_v4(solver)
+            solver = GeetestSolver(CAPTCHA_ID, CAPTCHA_RISK_TYPE)
+            result = solver.solve()
             if not result or not result.get("lot_number"):
                 raise RuntimeError(f"empty captcha result: {result}")
             print("[captcha] solved")
@@ -946,105 +1282,6 @@ def solve_captcha() -> Optional[dict]:
             if attempt < MAX_CAPTCHA_RETRIES:
                 time.sleep(2 * attempt)
     return None
-
-
-def _solve_geetest_v4(solver) -> dict:
-    """Drive GeeTest V4 load→verify and normalize the result for SSPanel login.
-
-    Upstream ``Geeked.solve()`` expects a ``seccode`` field from the ``/verify``
-    response, but for risk_type ``ai`` / ``invisible`` (passwordless flow used
-    by ikuuu) the verify endpoint returns ``{"result": "continue", "payload":
-    ..., "process_token": ...}`` with **no** ``seccode``. Upstream treats that
-    as a failure and raises. This wrapper drives load+verify directly and, when
-    the response indicates a successful continue/success result, maps the
-    GeeTest V4 fields onto the SSPanel ``captcha_result`` shape expected by the
-    login endpoint:
-
-      - lot_number     -> captcha_result[lot_number]
-      - payload        -> captcha_result[captcha_output]
-      - process_token  -> captcha_result[pass_token]
-      - gen_time       -> captcha_result[gen_time]  (server-provided, else now)
-    """
-    data = solver.load_captcha()
-    lot_number = data.get("lot_number")
-    if not lot_number:
-        raise RuntimeError(f"load_captcha returned no lot_number: {data}")
-
-    verify_resp: dict
-    try:
-        verify_resp = solver.submit_captcha(data)
-    except Exception as exc:
-        # submit_captcha raises when seccode is None. For ai/invisible risk
-        # types this is expected; recover the raw verify response carried in
-        # the exception message (dict repr) so we can still submit to SSPanel.
-        verify_resp = _extract_verify_dict(exc, data)
-
-    result_field = str(verify_resp.get("result", "")).lower()
-    has_seccode = bool(verify_resp.get("seccode"))
-
-    if result_field not in ("success", "continue") and not has_seccode:
-        raise RuntimeError(
-            f"verify rejected (result={verify_resp.get('result')!r}, "
-            f"score={verify_resp.get('score')!r})"
-        )
-
-    seccode = verify_resp.get("seccode") or {}
-    payload = (
-        seccode.get("captcha_output")
-        or verify_resp.get("payload")
-        or data.get("payload")
-        or ""
-    )
-    pass_token = (
-        seccode.get("pass_token")
-        or verify_resp.get("process_token")
-        or data.get("process_token")
-        or ""
-    )
-    gen_time = (
-        seccode.get("gen_time")
-        or verify_resp.get("gen_time")
-        or str(int(time.time()))
-    )
-
-    return {
-        "lot_number": lot_number,
-        "captcha_output": payload,
-        "pass_token": pass_token,
-        "gen_time": gen_time,
-    }
-
-
-def _extract_verify_dict(exc: Exception, load_data: dict) -> dict:
-    """Best-effort recovery of the verify response embedded in the upstream
-    'Failed to submit captcha: {...}' exception message."""
-    text = str(exc)
-    match = re.search(r"\{.*\}", text, re.S)
-    if not match:
-        # If we cannot parse the verify response, fall back to load-stage data
-        # so login at least carries something rather than crashing.
-        return {
-            "result": "continue",
-            "payload": load_data.get("payload", ""),
-            "process_token": load_data.get("process_token", ""),
-        }
-    try:
-        parsed = ast.literal_eval(match.group(0))
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-    try:
-        parsed = json.loads(match.group(0))
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-    return {
-        "result": "continue",
-        "payload": load_data.get("payload", ""),
-        "process_token": load_data.get("process_token", ""),
-    }
 
 
 def build_session() -> requests.Session:
