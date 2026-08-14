@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>配置生成器 · 机场自动签到</title>
+<style>
+  :root{
+    --bg-0:#070b14; --bg-1:#0d1424;
+    --ink:#e8eef7; --ink-dim:#8a97ad; --ink-faint:#5a6578;
+    --amber:#f5b942; --amber-soft:#ffd27a; --cyan:#4fd1c5; --rose:#fb7185; --emerald:#34d399;
+    --line:rgba(255,255,255,.08); --line-strong:rgba(255,255,255,.14);
+    --card:rgba(255,255,255,.035); --card-hi:rgba(255,255,255,.06);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:'SF Mono','JetBrains Mono',ui-monospace,'PingFang SC','Microsoft YaHei',monospace;
+    background:var(--bg-0); color:var(--ink); min-height:100vh; line-height:1.5;
+  }
+  body::before{
+    content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(900px 600px at 12% 0%, rgba(245,185,66,.06), transparent 60%),
+               radial-gradient(800px 700px at 95% 100%, rgba(79,209,197,.05), transparent 60%);
+  }
+  .wrap{position:relative; z-index:1; max-width:1180px; margin:0 auto; padding:28px 24px 64px}
+
+  /* header */
+  header{display:flex; align-items:center; justify-content:space-between; margin-bottom:32px; padding-bottom:20px; border-bottom:1px solid var(--line)}
+  .back{color:var(--ink-dim); text-decoration:none; font-size:14px; display:inline-flex; align-items:center; gap:6px; transition:color .25s}
+  .back:hover{color:var(--amber)}
+  header h1{font-family:'Georgia',serif; font-size:26px; font-weight:700}
+  header h1 .accent{color:var(--amber); font-style:italic}
+
+  /* layout */
+  .grid{display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:start}
+  .panel{border:1px solid var(--line); border-radius:16px; background:var(--card); overflow:hidden}
+  .panel-h{padding:18px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; font-weight:600; font-size:15px}
+  .panel-h .ico{color:var(--amber)}
+  .panel-b{padding:22px}
+
+  /* form */
+  .field{margin-bottom:18px}
+  .field:last-child{margin-bottom:0}
+  label{display:block; font-size:12.5px; color:var(--ink-dim); margin-bottom:7px; letter-spacing:.3px}
+  label .req{color:var(--rose)}
+  label .opt{color:var(--ink-faint); font-weight:400}
+  input, select, textarea{
+    width:100%; padding:11px 13px; background:rgba(0,0,0,.25); border:1px solid var(--line-strong);
+    border-radius:9px; color:var(--ink); font-family:inherit; font-size:14px; transition:all .25s;
+  }
+  input:focus, select:focus, textarea:focus{outline:none; border-color:var(--amber); box-shadow:0 0 0 3px rgba(245,185,66,.12)}
+  input::placeholder, textarea::placeholder{color:var(--ink-faint)}
+  .hint{font-size:11.5px; color:var(--ink-faint); margin-top:6px; line-height:1.5}
+
+  /* account rows */
+  .acc-list{display:flex; flex-direction:column; gap:12px}
+  .acc-row{display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:start; padding:14px; border:1px solid var(--line); border-radius:11px; background:rgba(0,0,0,.15)}
+  .acc-row .idx{font-size:11px; color:var(--amber); margin-bottom:4px; letter-spacing:1px}
+  .acc-field label{margin-bottom:5px; font-size:11.5px}
+  .acc-field input{padding:9px 11px; font-size:13px}
+  .btn-del{align-self:end; padding:9px 12px; background:rgba(251,113,133,.1); border:1px solid rgba(251,113,133,.3); color:var(--rose); border-radius:9px; cursor:pointer; font-family:inherit; font-size:13px; transition:all .2s}
+  .btn-del:hover{background:rgba(251,113,133,.2)}
+
+  .btn-add{margin-top:12px; width:100%; padding:11px; background:transparent; border:1px dashed var(--line-strong); border-radius:10px; color:var(--ink-dim); cursor:pointer; font-family:inherit; font-size:13.5px; transition:all .25s}
+  .btn-add:hover{border-color:var(--amber); color:var(--amber)}
+
+  /* toggle / advanced */
+  .adv-toggle{display:flex; align-items:center; gap:10px; padding:14px; border:1px solid var(--line); border-radius:11px; background:rgba(0,0,0,.15); cursor:pointer; user-select:none; margin:20px 0 18px}
+  .adv-toggle .chev{margin-left:auto; transition:transform .3s; color:var(--ink-faint)}
+  .adv-toggle.open .chev{transform:rotate(90deg)}
+  .adv-toggle .title{font-size:14px; font-weight:600}
+  .adv-toggle .sub{font-size:11.5px; color:var(--ink-faint)}
+  .adv-body{display:none}
+  .adv-body.open{display:block}
+
+  .two-col{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+
+  /* actions */
+  .actions{display:flex; gap:12px; margin-top:24px}
+  .btn{padding:13px 22px; border-radius:11px; font-family:inherit; font-size:14px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .3s; display:inline-flex; align-items:center; gap:8px}
+  .btn-gen{background:linear-gradient(135deg,var(--amber),var(--amber-soft)); color:#1a1206; flex:1; justify-content:center; box-shadow:0 6px 24px rgba(245,185,66,.3)}
+  .btn-gen:hover{transform:translateY(-2px); box-shadow:0 12px 36px rgba(245,185,66,.42)}
+  .btn-clear{background:transparent; color:var(--ink-dim); border-color:var(--line-strong)}
+  .btn-clear:hover{color:var(--rose); border-color:var(--rose)}
+
+  /* output */
+  .out-section{margin-bottom:20px}
+  .out-section:last-child{margin-bottom:0}
+  .out-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px}
+  .out-name{font-size:13px; font-weight:600; color:var(--ink)}
+  .out-name code{color:var(--amber); background:rgba(245,185,66,.1); padding:2px 8px; border-radius:5px; font-size:12.5px}
+  .out-desc{font-size:11px; color:var(--ink-faint); margin-top:3px}
+  .out-box{position:relative}
+  textarea.out{width:100%; min-height:72px; resize:vertical; font-size:12.5px; font-family:'SF Mono',ui-monospace,monospace; background:rgba(0,0,0,.35); padding:12px 44px 12px 13px}
+  .copy-btn{position:absolute; top:8px; right:8px; padding:6px 10px; background:var(--card-hi); border:1px solid var(--line-strong); border-radius:7px; color:var(--ink-dim); cursor:pointer; font-family:inherit; font-size:11.5px; transition:all .2s}
+  .copy-btn:hover{color:var(--amber); border-color:var(--amber)}
+  .copy-btn.done{color:var(--emerald); border-color:var(--emerald)}
+
+  /* repo jump */
+  .jump-box{margin-top:22px; padding:18px; border:1px solid var(--amber); border-radius:12px; background:linear-gradient(135deg, rgba(245,185,66,.08), rgba(79,209,197,.04))}
+  .jump-box h4{font-size:14px; margin-bottom:6px}
+  .jump-box p{font-size:12px; color:var(--ink-dim); margin-bottom:12px; line-height:1.6}
+  .jump-row{display:flex; gap:10px}
+  .jump-row input{flex:1}
+  .btn-jump{padding:11px 18px; background:linear-gradient(135deg,var(--amber),var(--amber-soft)); color:#1a1206; border:none; border-radius:9px; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; transition:all .25s}
+  .btn-jump:hover{transform:translateY(-1px); box-shadow:0 8px 22px rgba(245,185,66,.35)}
+
+  /* toast */
+  .toast{position:fixed; bottom:32px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--bg-1); border:1px solid var(--emerald); color:var(--emerald); padding:12px 22px; border-radius:10px; font-size:13px; opacity:0; pointer-events:none; transition:all .3s; z-index:100; box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+
+  .status-bar{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--ink-faint); margin-top:16px; padding-top:14px; border-top:1px solid var(--line)}
+  .status-bar .ok{color:var(--emerald)}
+
+  @media (max-width:920px){
+    .grid{grid-template-columns:1fr}
+    .acc-row{grid-template-columns:1fr 1fr auto}
+  }
+  @media (max-width:560px){
+    .acc-row{grid-template-columns:1fr}
+    .two-col{grid-template-columns:1fr}
+    .actions{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="index.html" class="back">← 返回首页</a>
+    <h1>配置<span class="accent">生成器</span></h1>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT: FORM -->
+    <div class="panel">
+      <div class="panel-h"><span class="ico">📝</span> 填写签到配置</div>
+      <div class="panel-b">
+
+        <div class="field">
+          <label>机场地址 <span class="opt">（可选，留空自动从 ikuuu.de 检测）</span></label>
+          <input id="url" type="text" placeholder="https://ikuuu.win">
+          <div class="hint">请填写真实面板域名（如 ikuuu.win）。勿填公告页 ikuuu.de / ikuuu.co，脚本会自动探测切换。</div>
+        </div>
+
+        <div class="field">
+          <label>签到账号 <span class="req">*</span></label>
+          <div class="acc-list" id="accList"></div>
+          <button class="btn-add" onclick="addAccount()">＋ 添加账号</button>
+          <div class="hint">一行邮箱一行密码，支持多个账号。数据仅在浏览器本地处理。</div>
+        </div>
+
+        <div class="adv-toggle" id="advToggle" onclick="toggleAdvanced()">
+          <div>
+            <div class="title">通知与高级配置</div>
+            <div class="sub">Server 酱、邮件 SMTP / Resend、时区等（可选）</div>
+          </div>
+          <span class="chev">▸</span>
+        </div>
+        <div class="adv-body" id="advBody">
+
+          <div class="two-col">
+            <div class="field">
+              <label>Server 酱 SCKEY <span class="opt">（可选）</span></label>
+              <input id="sckey" type="text" placeholder="SCT...">
+            </div>
+            <div class="field">
+              <label>签到时区 <span class="opt">（可选）</span></label>
+              <input id="tz" type="text" placeholder="Asia/Shanghai">
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label>SMTP 服务器 <span class="opt">（可选）</span></label>
+              <input id="smtpServer" type="text" placeholder="smtp.qq.com:465:ssl">
+            </div>
+            <div class="field">
+              <label>SMTP 账号 <span class="opt">（可选）</span></label>
+              <input id="smtpAccount" type="text" placeholder="user&#10;pass&#10;mail_to">
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label>Resend API Key <span class="opt">（可选）</span></label>
+              <input id="resendKey" type="text" placeholder="re_xxxxx">
+            </div>
+            <div class="field">
+              <label>Resend 发件人 <span class="opt">（可选）</span></label>
+              <input id="resendFrom" type="text" placeholder="onboarding@resend.dev">
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label>邮件收件人 MAIL_TO <span class="opt">（可选）</span></label>
+              <input id="mailTo" type="text" placeholder="a@x.com,b@x.com">
+            </div>
+            <div class="field">
+              <label>验证码 Captcha ID <span class="opt">（高级）</span></label>
+              <input id="captchaId" type="text" placeholder="cc96d05ba8b60f9112f76e18526fcb73">
+            </div>
+          </div>
+
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-gen" onclick="generateConfig()">✨ 生成配置</button>
+          <button class="btn btn-clear" onclick="clearAll()">清空</button>
+        </div>
+
+        <div class="status-bar">
+          <span id="saveStatus">📝 未保存</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- RIGHT: OUTPUT -->
+    <div class="panel">
+      <div class="panel-h"><span class="ico">📋</span> 生成的 Secrets</div>
+      <div class="panel-b">
+
+        <div class="out-section">
+          <div class="out-head">
+            <div>
+              <div class="out-name"><code>CONFIG</code> <span class="req">*</span></div>
+              <div class="out-desc">账号密码配置，一行邮箱一行密码</div>
+            </div>
+          </div>
+          <div class="out-box">
+            <textarea class="out" id="out-config" readonly placeholder="点击「生成配置」后此处显示..."></textarea>
+            <button class="copy-btn" onclick="copyText('out-config', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>URL</code></div><div class="out-desc">机场面板地址</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-url" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-url', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SCKEY</code></div><div class="out-desc">Server 酱推送密钥</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-sckey" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-sckey', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SMTP_SERVER</code></div><div class="out-desc">SMTP 服务器配置</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-smtp-server" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-server', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>SMTP_ACCOUNT</code></div><div class="out-desc">SMTP 账号密码收件人</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-smtp-account" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-smtp-account', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>MAIL_TO</code></div><div class="out-desc">邮件收件人（逗号分隔）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-mailto" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-mailto', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>RESEND_API_KEY</code></div><div class="out-desc">Resend HTTPS 发信密钥</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-resend-key" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-resend-key', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>RESEND_FROM</code></div><div class="out-desc">Resend 发件人地址</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-resend-from" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-resend-from', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="out-section">
+          <div class="out-head"><div><div class="out-name"><code>CAPTCHA_ID</code></div><div class="out-desc">GeeTest V4 验证码 ID（高级）</div></div></div>
+          <div class="out-box">
+            <textarea class="out" id="out-captcha-id" readonly></textarea>
+            <button class="copy-btn" onclick="copyText('out-captcha-id', this)">复制</button>
+          </div>
+        </div>
+
+        <div class="jump-box">
+          <h4>🚀 一键跳转 GitHub Secrets</h4>
+          <p>填写你的仓库地址（格式 owner/repo），点击跳转到该仓库的 Settings → Secrets 页面，逐项粘贴上方生成的值。</p>
+          <div class="jump-row">
+            <input id="repoInput" type="text" placeholder="bighammer-link/jichang_checkin" value="bighammer-link/jichang_checkin">
+            <button class="btn-jump" onclick="jumpToSecrets()">跳转 →</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">已复制到剪贴板</div>
+
+<script>
+const STORAGE_KEY = 'jichang_checkin_config';
+let accCounter = 0;
+
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function addAccount(email='', pass=''){
+  accCounter++;
+  const id = accCounter;
+  const row = document.createElement('div');
+  row.className = 'acc-row';
+  row.dataset.id = id;
+  row.innerHTML = `
+    <div class="acc-field">
+      <label>账号 ${id} 邮箱 <span class="req">*</span></label>
+      <input type="text" data-k="email" placeholder="user@example.com" value="${escapeHtml(email)}">
+    </div>
+    <div class="acc-field">
+      <label>账号 ${id} 密码 <span class="req">*</span></label>
+      <input type="text" data-k="pass" placeholder="password" value="${escapeHtml(pass)}">
+    </div>
+    <button class="btn-del" onclick="delAccount(this)" title="删除">✕</button>
+  `;
+  document.getElementById('accList').appendChild(row);
+  row.querySelectorAll('input').forEach(inp => inp.addEventListener('input', autoSave));
+}
+
+function delAccount(btn){
+  btn.closest('.acc-row').remove();
+  if(document.getElementById('accList').children.length === 0){
+    addAccount();
+  }
+  reindexAccounts();
+  autoSave();
+}
+
+function reindexAccounts(){
+  const rows = document.querySelectorAll('.acc-row');
+  rows.forEach((row, i) => {
+    row.querySelector('label').innerHTML = `账号 ${i+1} 邮箱 <span class="req">*</span>`;
+    const passLbl = row.querySelectorAll('label')[1];
+    if(passLbl) passLbl.innerHTML = `账号 ${i+1} 密码 <span class="req">*</span>`;
+  });
+}
+
+function toggleAdvanced(){
+  document.getElementById('advToggle').classList.toggle('open');
+  document.getElementById('advBody').classList.toggle('open');
+}
+
+function getAccounts(){
+  const rows = document.querySelectorAll('.acc-row');
+  const accounts = [];
+  rows.forEach(row => {
+    const email = row.querySelector('[data-k="email"]').value.trim();
+    const pass = row.querySelector('[data-k="pass"]').value.trim();
+    if(email || pass) accounts.push({email, pass});
+  });
+  return accounts;
+}
+
+function val(id){return (document.getElementById(id).value || '').trim();}
+
+function generateConfig(){
+  const accounts = getAccounts();
+  if(accounts.length === 0){
+    showToast('⚠️ 请至少添加一个账号', 'warn');
+    return;
+  }
+  for(const a of accounts){
+    if(!a.email || !a.pass){
+      showToast('⚠️ 每个账号的邮箱和密码都不能为空', 'warn');
+      return;
+    }
+  }
+
+  const lines = [];
+  accounts.forEach(a => { lines.push(a.email); lines.push(a.pass); });
+  const configText = lines.join('\n');
+
+  setOut('out-config', configText);
+  setOut('out-url', val('url'));
+  setOut('out-sckey', val('sckey'));
+  setOut('out-smtp-server', val('smtpServer'));
+  setOut('out-smtp-account', val('smtpAccount'));
+  setOut('out-mailto', val('mailTo'));
+  setOut('out-resend-key', val('resendKey'));
+  setOut('out-resend-from', val('resendFrom'));
+  setOut('out-captcha-id', val('captchaId'));
+
+  autoSave();
+  showToast('✅ 配置已生成');
+}
+
+function setOut(id, text){
+  const el = document.getElementById(id);
+  el.value = text || '';
+}
+
+async function copyText(id, btn){
+  const el = document.getElementById(id);
+  const text = el.value;
+  if(!text){showToast('⚠️ 内容为空', 'warn'); return;}
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    } else {
+      el.select(); document.execCommand('copy');
+    }
+    const orig = btn.textContent;
+    btn.textContent = '已复制';
+    btn.classList.add('done');
+    setTimeout(()=>{btn.textContent = orig; btn.classList.remove('done');}, 1400);
+    showToast('📋 已复制到剪贴板');
+  }catch(e){
+    showToast('❌ 复制失败：' + e.message, 'warn');
+  }
+}
+
+function jumpToSecrets(){
+  const repo = val('repoInput').replace(/^https?:\/\/github\.com\//,'').replace(/\/$/,'').replace(/^\/+/,'');
+  if(!repo || !repo.includes('/')){
+    showToast('⚠️ 请填写 owner/repo 格式', 'warn');
+    return;
+  }
+  const url = `https://github.com/${repo}/settings/secrets/actions`;
+  window.open(url, '_blank');
+}
+
+function autoSave(){
+  const data = {
+    url: val('url'), sckey: val('sckey'), tz: val('tz'),
+    smtpServer: val('smtpServer'), smtpAccount: val('smtpAccount'),
+    resendKey: val('resendKey'), resendFrom: val('resendFrom'),
+    mailTo: val('mailTo'), captchaId: val('captchaId'),
+    repo: val('repoInput'),
+    accounts: getAccounts(),
+    advOpen: document.getElementById('advBody').classList.contains('open')
+  };
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    document.getElementById('saveStatus').innerHTML = '<span class="ok">✓ 已自动保存到本地</span>';
+  }catch(e){}
+}
+
+function loadSaved(){
+  let data;
+  try{data = JSON.parse(localStorage.getItem(STORAGE_KEY));}catch(e){return;}
+  if(!data) return;
+  document.getElementById('url').value = data.url || '';
+  document.getElementById('sckey').value = data.sckey || '';
+  document.getElementById('tz').value = data.tz || '';
+  document.getElementById('smtpServer').value = data.smtpServer || '';
+  document.getElementById('smtpAccount').value = data.smtpAccount || '';
+  document.getElementById('resendKey').value = data.resendKey || '';
+  document.getElementById('resendFrom').value = data.resendFrom || '';
+  document.getElementById('mailTo').value = data.mailTo || '';
+  document.getElementById('captchaId').value = data.captchaId || '';
+  document.getElementById('repoInput').value = data.repo || 'bighammer-link/jichang_checkin';
+  if(data.advOpen){
+    document.getElementById('advToggle').classList.add('open');
+    document.getElementById('advBody').classList.add('open');
+  }
+  const accounts = data.accounts && data.accounts.length ? data.accounts : [{email:'',pass:''}];
+  accounts.forEach(a => addAccount(a.email, a.pass));
+  if(data.url || data.sckey){ generateConfig(); }
+}
+
+function clearAll(){
+  if(!confirm('确定清空所有配置吗？此操作不可恢复。')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  document.querySelectorAll('input, textarea').forEach(el => {
+    if(el.id === 'repoInput'){el.value = 'bighammer-link/jichang_checkin'; return;}
+    el.value = '';
+  });
+  document.getElementById('accList').innerHTML = '';
+  accCounter = 0;
+  addAccount();
+  document.querySelectorAll('textarea.out').forEach(el => el.value = '');
+  document.getElementById('saveStatus').textContent = '📝 未保存';
+  showToast('已清空');
+}
+
+let toastTimer;
+function showToast(msg, type){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = type === 'warn' ? 'var(--rose)' : 'var(--emerald)';
+  t.style.color = type === 'warn' ? 'var(--rose)' : 'var(--emerald)';
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+document.querySelectorAll('input').forEach(el => {
+  if(el.id !== 'repoInput') el.addEventListener('input', autoSave);
+  else el.addEventListener('input', autoSave);
+});
+
+loadSaved();
+</script>
+</body>
+</html>

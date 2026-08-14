@@ -1,0 +1,90 @@
+name: "Airport Checkin"
+
+on:
+  schedule:
+    - cron: "10 16 * * *" # 00:10 Asia/Shanghai, away from the busy top of hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+
+      - name: Random sleep
+        if: github.event_name == 'schedule'
+        run: sleep $(shuf -i 10-180 -n 1)
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Fail fast when a transitive dep (e.g. typing_extensions for
+          # curl_cffi) is missing, instead of crashing at runtime.
+          python -c "import requests, curl_cffi, Crypto; import typing_extensions; print('deps ok')"
+
+      - name: Run offline tests
+        run: python -B -m unittest discover -s tests -v
+
+      - name: Vendor GeekedTest captcha solver
+        run: |
+          set -e
+          GEEKED_COMMIT=93a81933d8e8752cfedb94a008a71faf76cf322c
+          git init -q temp_geeked
+          git -C temp_geeked remote add origin https://github.com/xKiian/GeekedTest.git
+          git -C temp_geeked fetch --depth 1 origin "$GEEKED_COMMIT"
+          git -C temp_geeked checkout -q --detach FETCH_HEAD
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("temp_geeked/geeked/sign.py")
+          code = path.read_text(encoding="utf-8")
+          replacements = {
+              "from geeked.slide import SlideSolver": "SlideSolver = None",
+              "from geeked.gobang import GobangSolver": "GobangSolver = None",
+              "from geeked.icon import IconSolver": "IconSolver = None",
+          }
+          for old, new in replacements.items():
+              if code.count(old) != 1:
+                  raise RuntimeError(f"Unexpected GeekedTest source; missing exact import: {old}")
+              code = code.replace(old, new)
+          path.write_text(code, encoding="utf-8")
+          PY
+          rm -rf geeked
+          mv temp_geeked/geeked ./geeked
+          rm -rf temp_geeked
+          # Smoke-test the vendored solver import so a broken geeked build
+          # surfaces here instead of mid-run.
+          python -c "from geeked import Geeked; print('geeked import ok')"
+
+      - name: Run checkin
+        env:
+          URL: ${{ secrets.URL }}
+          CONFIG: ${{ secrets.CONFIG }}
+          SCKEY: ${{ secrets.SCKEY }}
+          CAPTCHA_ID: ${{ secrets.CAPTCHA_ID }}
+          CAPTCHA_RISK_TYPE: ${{ secrets.CAPTCHA_RISK_TYPE }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_ACCOUNT: ${{ secrets.SMTP_ACCOUNT }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          CHECKIN_TIMEZONE: ${{ vars.CHECKIN_TIMEZONE || 'Asia/Shanghai' }}
+          REQUIRE_NOTIFICATION_SUCCESS: ${{ vars.REQUIRE_NOTIFICATION_SUCCESS || 'false' }}
+        run: python main.py

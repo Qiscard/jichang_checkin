@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>机场自动签到 · 配置生成器</title>
+<meta http-equiv="refresh" content="0; url=config_generator.html">
+<style>
+  :root{
+    --bg-0:#070b14; --amber:#f5b942; --amber-soft:#ffd27a;
+    --ink:#e8eef7; --ink-dim:#8a97ad;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:'SF Mono','JetBrains Mono',ui-monospace,'PingFang SC','Microsoft YaHei',monospace;
+    background:var(--bg-0); color:var(--ink); min-height:100vh; display:flex; align-items:center; justify-content:center;
+  }
+  body::before{
+    content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(900px 600px at 50% 0%, rgba(245,185,66,.08), transparent 60%);
+  }
+  .card{
+    position:relative; z-index:1; text-align:center; padding:48px 56px;
+    border:1px solid rgba(255,255,255,.08); border-radius:18px; background:rgba(255,255,255,.03);
+  }
+  .mark{
+    width:54px; height:54px; margin:0 auto 22px; border-radius:13px; display:grid; place-items:center;
+    background:linear-gradient(135deg,var(--amber),var(--amber-soft)); color:#1a1206; font-size:26px;
+    box-shadow:0 0 28px rgba(245,185,66,.35); animation:iconBounce 3s ease-in-out infinite;
+  }
+  @keyframes iconBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  h1{font-family:'Georgia',serif; font-size:24px; font-weight:700; margin-bottom:10px}
+  h1 .accent{color:var(--amber); font-style:italic}
+  p{font-size:14px; color:var(--ink-dim); margin-bottom:22px}
+  .link{
+    display:inline-flex; align-items:center; gap:8px; padding:12px 24px;
+    background:linear-gradient(135deg,var(--amber),var(--amber-soft)); color:#1a1206;
+    text-decoration:none; border-radius:11px; font-weight:600; font-size:14px;
+    box-shadow:0 6px 24px rgba(245,185,66,.3); transition:all .3s;
+  }
+  .link:hover{transform:translateY(-2px); box-shadow:0 12px 36px rgba(245,185,66,.42)}
+  .spinner{
+    width:18px; height:18px; border:2px solid rgba(245,185,66,.25);
+    border-top-color:var(--amber); border-radius:50%; display:inline-block; margin-right:8px;
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .footer{margin-top:20px; font-size:12px; color:rgba(255,255,255,.4)}
+  .footer a{color:var(--amber); text-decoration:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="mark">✈</div>
+  <h1>正在跳转至<span class="accent"> 配置生成器</span></h1>
+  <p>如未自动跳转，请点击下方按钮</p>
+  <a class="link" href="config_generator.html"><span class="spinner"></span>前往配置生成器 →</a>
+  <div class="footer">机场自动签到 · <a href="https://github.com/Qiscard/jichang_checkin" target="_blank" rel="noopener">GitHub 仓库</a></div>
+</div>
+<script>
+  window.location.replace('config_generator.html');
+</script>
+</body>
+</html>
