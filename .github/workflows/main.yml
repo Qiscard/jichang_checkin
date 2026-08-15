@@ -42,17 +42,5 @@ jobs:
           SCKEY: ${{ secrets.SCKEY }}
           CAPTCHA_ID: ${{ secrets.CAPTCHA_ID }}
           CAPTCHA_RISK_TYPE: ${{ secrets.CAPTCHA_RISK_TYPE }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_ACCOUNT: ${{ secrets.SMTP_ACCOUNT }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          SMTP_TO: ${{ secrets.SMTP_TO }}
-          SMTP_FROM: ${{ secrets.SMTP_FROM }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          RESEND_FROM: ${{ secrets.RESEND_FROM }}
           CHECKIN_TIMEZONE: ${{ vars.CHECKIN_TIMEZONE || 'Asia/Shanghai' }}
-          REQUIRE_NOTIFICATION_SUCCESS: ${{ vars.REQUIRE_NOTIFICATION_SUCCESS || 'false' }}
         run: python main.py

@@ -245,53 +245,6 @@ class CheckinRetryTests(unittest.TestCase):
         self.assertEqual(session.post.call_count, main.MAX_CHECKIN_RETRIES)
 
 
-class SmtpConfigurationTests(unittest.TestCase):
-    def test_newapi_individual_secrets_override_grouped_secrets(self):
-        with (
-            patch.object(main, "SMTP_SERVER", "legacy.example.com:465"),
-            patch.object(main, "SMTP_ACCOUNT", "legacy@example.com\nlegacy-pass\nlegacy-to@example.com"),
-            patch.object(main, "SMTP_HOST_ENV", "smtp.qq.com"),
-            patch.object(main, "SMTP_PORT_ENV", "587"),
-            patch.object(main, "SMTP_USER_ENV", "new@example.com"),
-            patch.object(main, "SMTP_PASS_ENV", "new-pass"),
-            patch.object(main, "SMTP_TO_ENV", "new-to@example.com"),
-            patch.object(main, "SMTP_FROM_ENV", "notice@example.com"),
-            patch.object(main, "MAIL_TO_ENV", "old-to@example.com"),
-        ):
-            config = main.resolve_smtp_config()
-
-        self.assertEqual(
-            config,
-            (
-                "smtp.qq.com",
-                587,
-                False,
-                "new@example.com",
-                "new-pass",
-                "new-to@example.com",
-                "notice@example.com",
-            ),
-        )
-
-    def test_grouped_smtp_secrets_remain_supported(self):
-        with (
-            patch.object(main, "SMTP_SERVER", "smtp.qq.com:465"),
-            patch.object(main, "SMTP_ACCOUNT", "sender@qq.com\nauth-code\nreceiver@example.com"),
-            patch.object(main, "SMTP_HOST_ENV", ""),
-            patch.object(main, "SMTP_PORT_ENV", ""),
-            patch.object(main, "SMTP_USER_ENV", ""),
-            patch.object(main, "SMTP_PASS_ENV", ""),
-            patch.object(main, "SMTP_TO_ENV", ""),
-            patch.object(main, "SMTP_FROM_ENV", ""),
-            patch.object(main, "MAIL_TO_ENV", ""),
-        ):
-            config = main.resolve_smtp_config()
-
-        self.assertEqual(
-            config,
-            ("smtp.qq.com", 465, True, "sender@qq.com", "auth-code", "receiver@example.com", "sender@qq.com"),
-        )
-
 
 class PanelDiscoveryTests(unittest.TestCase):
     def test_directory_page_links_yield_panel_hosts(self):
@@ -367,125 +320,9 @@ class PanelDiscoveryTests(unittest.TestCase):
         probe_mock.assert_called_once_with("https://ikuuu.foo")
 
 
+
 class NotificationTests(unittest.TestCase):
-    def test_actions_falls_back_to_smtp_when_resend_fails(self):
-        resend_failure = main.DeliveryResult("邮件/Resend", True, False, "HTTP 403")
-        smtp_success = main.DeliveryResult("邮件/SMTP", True, True, "投递成功")
-        with (
-            patch.dict(main.os.environ, {"GITHUB_ACTIONS": "true"}),
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "MAIL_TO", "receiver@example.com"),
-            patch.object(main, "SMTP_HOST", "smtp.qq.com"),
-            patch.object(main, "SMTP_USER", "sender@qq.com"),
-            patch.object(main, "SMTP_PASS", "auth-code"),
-            patch.object(main, "send_email_resend", return_value=resend_failure) as resend,
-            patch.object(main, "send_email_smtp", return_value=smtp_success) as smtp,
-        ):
-            result = main.send_email("标题", "正文", "<p>正文</p>")
-
-        self.assertTrue(result.ok)
-        resend.assert_called_once()
-        smtp.assert_called_once()
-
-    def test_resend_only_does_not_print_smtp_warning(self):
-        success = main.DeliveryResult("邮件/Resend", True, True, "投递成功")
-        with (
-            patch.dict(main.os.environ, {"GITHUB_ACTIONS": "true"}),
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "MAIL_TO", "owner@example.com"),
-            patch.object(main, "SMTP_HOST", ""),
-            patch.object(main, "SMTP_USER", ""),
-            patch.object(main, "SMTP_PASS", ""),
-            patch.object(main, "SMTP_SERVER", ""),
-            patch.object(main, "SMTP_ACCOUNT", ""),
-            patch.object(main, "send_email_resend", return_value=success),
-            patch("builtins.print") as print_mock,
-        ):
-            result = main.send_email("标题", "正文", "<p>正文</p>")
-
-        self.assertTrue(result.ok)
-        rendered = " ".join(str(call) for call in print_mock.call_args_list)
-        self.assertNotIn("SMTP", rendered)
-
-    def test_resend_uses_mail_to_without_smtp_account(self):
-        response = Mock(status_code=200, text='{"id":"email_123"}')
-        with (
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "RESEND_FROM", "notice@example.com"),
-            patch.object(main, "MAIL_TO", "receiver@example.com"),
-            patch.object(main, "SMTP_USER", ""),
-            patch.object(main.requests, "post", return_value=response) as post,
-        ):
-            result = main.send_email_resend("标题", "纯文本", "<b>HTML</b>")
-
-        self.assertTrue(result.ok)
-        self.assertEqual(post.call_args.kwargs["json"]["to"], ["receiver@example.com"])
-        self.assertEqual(post.call_args.kwargs["json"]["html"], "<b>HTML</b>")
-
-    def test_resend_does_not_reuse_unverified_smtp_sender(self):
-        response = Mock(status_code=200, text='{"id":"email_123"}')
-        with (
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "RESEND_FROM", ""),
-            patch.object(main, "MAIL_TO", "receiver@example.com"),
-            patch.object(main, "SMTP_USER", "sender@qq.com"),
-            patch.object(main.requests, "post", return_value=response) as post,
-        ):
-            result = main.send_email_resend("标题", "纯文本", "<b>HTML</b>")
-
-        self.assertTrue(result.ok)
-        self.assertEqual(post.call_args.kwargs["json"]["from"], "onboarding@resend.dev")
-
-    def test_resend_testing_recipient_error_is_actionable(self):
-        response = Mock(
-            status_code=403,
-            text=(
-                '{"statusCode":403,"name":"validation_error","message":'
-                '"You can only send testing emails to your own email address '
-                '(owner@example.com). To send emails to other recipients, please verify a domain"}'
-            ),
-        )
-        with (
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "RESEND_FROM", ""),
-            patch.object(main, "MAIL_TO", "receiver@example.com"),
-            patch.object(main.requests, "post", return_value=response),
-        ):
-            result = main.send_email_resend("标题", "纯文本", "<b>HTML</b>")
-
-        self.assertFalse(result.ok)
-        self.assertIn("owner@example.com", result.message)
-        self.assertIn("验证域名", result.message)
-
-    def test_serverchan_http_200_with_error_code_is_failure(self):
-        response = Mock(status_code=200, ok=True, text='{"code":40001,"message":"bad key"}')
-        with (
-            patch.object(main, "SCKEY", "test-key"),
-            patch.object(main.requests, "post", return_value=response),
-        ):
-            result = main.send_serverchan("标题", "内容")
-
-        self.assertFalse(result.ok)
-        self.assertIn("code=40001", result.message)
-
-    def test_partial_resend_configuration_is_reported_as_failure(self):
-        with (
-            patch.object(main, "RESEND_API_KEY", "re_test"),
-            patch.object(main, "RESEND_FROM", ""),
-            patch.object(main, "MAIL_TO", ""),
-            patch.object(main, "SMTP_SERVER", ""),
-            patch.object(main, "SMTP_ACCOUNT", ""),
-            patch.object(main, "SMTP_HOST", ""),
-            patch.object(main, "SMTP_USER", ""),
-            patch.object(main, "SMTP_PASS", ""),
-        ):
-            result = main.send_email("标题", "正文", "<p>正文</p>")
-
-        self.assertTrue(result.configured)
-        self.assertFalse(result.ok)
-        self.assertIn("MAIL_TO", result.message)
-
-    def test_notification_contains_plain_markdown_and_html_layouts(self):
+    def test_notification_contains_markdown_layout(self):
         result = main.AccountResult(
             1,
             "user@example.com",
@@ -496,17 +333,12 @@ class NotificationTests(unittest.TestCase):
             "100 MB",
         )
 
-        title, plain, markdown, html = main.build_notification([result])
+        title, markdown = main.build_notification([result])
 
         self.assertIn("[签到成功] 1/1", title)
-        self.assertIn("账号明细", plain)
         self.assertIn("### #1 `us***r@example.com`", markdown)
-        self.assertIn("<table", html)
-        self.assertIn("主页显示已签到", html)
-        self.assertIn("本次奖励：100 MB", plain)
+        self.assertIn("主页显示已签到", markdown)
         self.assertIn("**本次奖励：** `100 MB`", markdown)
-        self.assertIn("本次奖励", html)
-
 
 class CaptchaSolverTests(unittest.TestCase):
     def test_extract_seccode_from_seccode_dict(self):

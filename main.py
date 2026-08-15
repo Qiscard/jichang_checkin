@@ -12,13 +12,9 @@ import os
 import random
 import re
 import socket
-import smtplib
-import ssl
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from html import escape
 from html.parser import HTMLParser
 from typing import Dict, List, Optional, Tuple
@@ -121,109 +117,10 @@ CAPTCHA_RISK_TYPE = env("CAPTCHA_RISK_TYPE", DEFAULT_RISK_TYPE)
 CONFIG = env("CONFIG")
 SCKEY = env("SCKEY")
 URL_RAW = env("URL", DEFAULT_URL)
-
-# Grouped mail secrets:
-#   SMTP_SERVER  -> host + port  (e.g. smtp.qq.com:465  or two lines)
-#   SMTP_ACCOUNT -> user / pass / mail_to  (three lines; mail_to optional)
-SMTP_SERVER = env("SMTP_SERVER")
-SMTP_ACCOUNT = env("SMTP_ACCOUNT")
-# Newapi-checkin-compatible individual secrets. When present, these override
-# the corresponding grouped values above so an existing Actions setup works.
-SMTP_HOST_ENV = env("SMTP_HOST")
-SMTP_PORT_ENV = env("SMTP_PORT")
-SMTP_USER_ENV = env("SMTP_USER")
-SMTP_PASS_ENV = env("SMTP_PASS")
-SMTP_TO_ENV = env("SMTP_TO")
-SMTP_FROM_ENV = env("SMTP_FROM")
-RESEND_API_KEY = env("RESEND_API_KEY")
-RESEND_FROM = env("RESEND_FROM")  # optional; must belong to a Resend-verified domain
-MAIL_TO_ENV = env("MAIL_TO")
 CHECKIN_TIMEZONE = env("CHECKIN_TIMEZONE", "Asia/Shanghai")
-REQUIRE_NOTIFICATION_SUCCESS = env("REQUIRE_NOTIFICATION_SUCCESS").lower() in {
-    "1",
-    "true",
-    "yes",
-}
 
 # Resolved at runtime by resolve_base_url()
 BASE_URL = DEFAULT_URL
-
-
-def parse_smtp_server(raw: str) -> tuple[str, int, bool]:
-    """Parse host/port[/ssl] from one secret."""
-    raw = (raw or "").strip()
-    if not raw:
-        return "", 465, True
-
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    if len(lines) >= 2 and ":" not in lines[0]:
-        host = lines[0]
-        port_part = lines[1]
-        mode = lines[2] if len(lines) >= 3 else ""
-    else:
-        parts = re.split(r"[:\s]+", lines[0])
-        if len(parts) == 1:
-            host, port_part, mode = parts[0], "465", ""
-        elif len(parts) == 2:
-            host, port_part, mode = parts[0], parts[1], ""
-        else:
-            host, port_part, mode = parts[0], parts[1], parts[2]
-
-    try:
-        port = int(port_part)
-    except Exception:
-        port = 465
-
-    mode_l = (mode or "").strip().lower()
-    if mode_l in {"starttls", "tls", "0", "false", "no"}:
-        use_ssl = False
-    elif mode_l in {"ssl", "1", "true", "yes"}:
-        use_ssl = True
-    else:
-        use_ssl = port != 587
-    return host, port, use_ssl
-
-
-def parse_smtp_account(raw: str) -> tuple[str, str, str]:
-    """Parse user/pass/mail_to from one secret."""
-    raw = (raw or "").strip()
-    if not raw:
-        return "", "", ""
-
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    if len(lines) == 1:
-        parts = [p.strip() for p in re.split(r"[;,|]", lines[0]) if p.strip()]
-    else:
-        parts = lines
-
-    user = parts[0] if len(parts) >= 1 else ""
-    password = parts[1] if len(parts) >= 2 else ""
-    mail_to = parts[2] if len(parts) >= 3 else user
-    return user, password, mail_to
-
-
-def resolve_smtp_config() -> tuple[str, int, bool, str, str, str, str]:
-    grouped_host, grouped_port, grouped_ssl = parse_smtp_server(SMTP_SERVER)
-    grouped_user, grouped_pass, grouped_to = parse_smtp_account(SMTP_ACCOUNT)
-
-    host = SMTP_HOST_ENV or grouped_host
-    port = grouped_port
-    use_ssl = grouped_ssl
-    if SMTP_PORT_ENV:
-        try:
-            port = int(SMTP_PORT_ENV)
-        except ValueError:
-            port = grouped_port
-        use_ssl = port != 587
-
-    user = SMTP_USER_ENV or grouped_user
-    password = SMTP_PASS_ENV or grouped_pass
-    mail_to = SMTP_TO_ENV or MAIL_TO_ENV or grouped_to or user
-    mail_from = SMTP_FROM_ENV or user
-    return host, port, use_ssl, user, password, mail_to, mail_from
-
-
-SMTP_HOST, SMTP_PORT, SMTP_SSL, SMTP_USER, SMTP_PASS, MAIL_TO, MAIL_FROM = resolve_smtp_config()
 
 
 def parse_json_loose(text: str) -> Optional[dict]:
@@ -654,7 +551,7 @@ def extract_traffic_reward(message: str) -> str:
     return f"{match.group(1)} {match.group(2).upper()}"
 
 
-def build_notification(results: List[AccountResult]) -> Tuple[str, str, str, str]:
+def build_notification(results: List[AccountResult]) -> Tuple[str, str]:
     total = len(results)
     success_count = sum(1 for result in results if result.ok)
     if success_count == total:
@@ -668,39 +565,19 @@ def build_notification(results: List[AccountResult]) -> Tuple[str, str, str, str
     timestamp = datetime.now(checkin_timezone()).strftime("%Y-%m-%d %H:%M:%S %Z")
     title = f"[{overall}] {success_count}/{total} · {host}"
 
-    plain_lines = [
-        "机场签到日报",
-        f"结果：{overall}（{success_count}/{total}）",
-        f"面板：{host}",
-        f"时间：{timestamp}",
-        "",
-        "账号明细",
-    ]
     markdown_lines = [
         f"## {overall}  {success_count}/{total}",
         "",
         f"- **面板：** `{host}`",
         f"- **时间：** {timestamp}",
     ]
-    html_items: List[str] = []
 
     for result in results:
         status_text = "成功" if result.ok else "失败"
-        status_color = "#087a55" if result.ok else "#b42318"
         account = mask_account(result.account)
         message = _compact_message(result.message)
         verification = _compact_message(result.verification, 120)
         reward = _compact_message(result.reward, 60)
-        plain_lines.extend(
-            [
-                "",
-                f"#{result.index} {account}  {status_text}",
-                f"阶段：{result.stage}",
-                f"验证：{verification}",
-                *([f"本次奖励：{reward}"] if reward else []),
-                f"说明：{message}",
-            ]
-        )
         markdown_lines.extend(
             [
                 "",
@@ -712,45 +589,8 @@ def build_notification(results: List[AccountResult]) -> Tuple[str, str, str, str
                 f"- **说明：** {message}",
             ]
         )
-        reward_row = (
-            f'<tr><td style="width:78px;padding:8px 12px;color:#667085;vertical-align:top">本次奖励</td>'
-            f'<td style="padding:8px 12px;font-weight:700;color:#087a55;word-break:break-word">{escape(reward)}</td></tr>'
-            if reward
-            else ""
-        )
-        html_items.append(
-            '<div style="margin-bottom:12px;border:1px solid #e4e7ec;border-radius:8px;overflow:hidden">'
-            '<div style="padding:11px 14px;background:#f9fafb;border-bottom:1px solid #e4e7ec">'
-            f'<span style="font-weight:700">#{result.index} {escape(account)}</span>'
-            f'<span style="float:right;font-weight:700;color:{status_color}">{status_text}</span>'
-            "</div>"
-            '<table role="presentation" style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:14px;line-height:1.55">'
-            f'<tr><td style="width:78px;padding:8px 12px;color:#667085;vertical-align:top">阶段</td><td style="padding:8px 12px;word-break:break-word">{escape(result.stage)}</td></tr>'
-            f'<tr><td style="width:78px;padding:8px 12px;color:#667085;vertical-align:top">主页验证</td><td style="padding:8px 12px;word-break:break-word">{escape(verification)}</td></tr>'
-            f'{reward_row}'
-            f'<tr><td style="width:78px;padding:8px 12px;color:#667085;vertical-align:top">说明</td><td style="padding:8px 12px;word-break:break-word">{escape(message)}</td></tr>'
-            "</table></div>"
-        )
 
-    summary_color = "#087a55" if success_count == total else "#b54708" if success_count else "#b42318"
-    html_content = f"""<!doctype html>
-<html lang="zh-CN">
-<body style="margin:0;background:#f5f7fa;color:#182230;font-family:Arial,'Microsoft YaHei',sans-serif">
-  <div style="max-width:760px;margin:0 auto;padding:24px 12px">
-    <div style="background:#ffffff;border:1px solid #e4e7ec;border-radius:8px;overflow:hidden">
-      <div style="padding:22px 24px;border-bottom:1px solid #e4e7ec">
-        <div style="font-size:13px;color:#667085">机场签到日报</div>
-        <div style="margin-top:6px;font-size:24px;font-weight:700;color:{summary_color}">{overall} {success_count}/{total}</div>
-        <div style="margin-top:10px;font-size:13px;color:#667085">{escape(host)} · {escape(timestamp)}</div>
-      </div>
-      <div style="padding:18px 24px">
-        {''.join(html_items)}
-      </div>
-    </div>
-  </div>
-</body>
-</html>"""
-    return title, "\n".join(plain_lines), "\n".join(markdown_lines), html_content
+    return title, "\n".join(markdown_lines)
 
 
 def send_serverchan(title: str, content: str) -> DeliveryResult:
@@ -769,220 +609,13 @@ def send_serverchan(title: str, content: str) -> DeliveryResult:
         return DeliveryResult("Server酱", True, False, f"请求异常: {exc}")
 
 
-def _email_recipients() -> List[str]:
-    return [addr.strip() for addr in (MAIL_TO or "").split(",") if addr.strip()]
-
-
-def send_email_resend(title: str, content: str, html_content: str) -> DeliveryResult:
-    """Send mail over HTTPS. Works on GitHub Actions where SMTP ports are blocked."""
-    if not RESEND_API_KEY:
-        return DeliveryResult("邮件/Resend", False, False, "未配置 RESEND_API_KEY")
-    recipients = _email_recipients()
-    if not recipients:
-        return DeliveryResult("邮件/Resend", True, False, "未配置 MAIL_TO")
-
-    # SMTP identities are not automatically verified by Resend. Reusing a QQ
-    # or other SMTP address here causes Resend to reject an otherwise valid request.
-    sender = RESEND_FROM or "onboarding@resend.dev"
-    payload = {
-        "from": sender,
-        "to": recipients,
-        "subject": title,
-        "text": content,
-        "html": html_content,
-    }
-    try:
-        resp = requests.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = parse_json_loose(resp.text) or {}
-            message_id = data.get("id", "unknown")
-            return DeliveryResult("邮件/Resend", True, True, f"投递成功 HTTP {resp.status_code}, id={message_id}")
-        detail = _compact_message(resp.text, 220)
-        if resp.status_code == 403 and "only send testing emails to your own email address" in detail.lower():
-            allowed = re.search(r"\(([^()\s]+@[^()\s]+)\)", detail)
-            allowed_text = allowed.group(1) if allowed else "Resend 账号邮箱"
-            detail = (
-                f"Resend 测试发件人只能发送到 {allowed_text}；如需发送到其他 MAIL_TO，"
-                "请在 resend.com/domains 验证域名并设置 RESEND_FROM"
-            )
-        return DeliveryResult("邮件/Resend", True, False, f"HTTP {resp.status_code}: {detail}")
-    except Exception as exc:
-        return DeliveryResult("邮件/Resend", True, False, f"请求异常: {exc}")
-
-
-def _smtp_error_message(exc: Exception) -> str:
-    if isinstance(exc, smtplib.SMTPAuthenticationError):
-        return "SMTP 认证失败，请检查邮箱账号和授权码"
-    if isinstance(exc, smtplib.SMTPRecipientsRefused):
-        return "收件人被 SMTP 服务拒绝，请检查 MAIL_TO"
-    if isinstance(exc, (socket.timeout, TimeoutError)):
-        return "连接超时；GitHub 托管 Runner 可能无法访问该 SMTP 端口"
-    if isinstance(exc, ssl.SSLError):
-        return f"TLS/SSL 握手失败: {exc}"
-    if isinstance(exc, (ConnectionError, OSError)):
-        return f"网络连接失败: {exc}"
-    return f"{type(exc).__name__}: {exc}"
-
-
-def send_email_smtp(title: str, content: str, html_content: str) -> DeliveryResult:
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_TO):
-        return DeliveryResult(
-            "邮件/SMTP",
-            False,
-            False,
-            "SMTP 配置不完整；可使用 SMTP_HOST/PORT/USER/PASS/TO，或 SMTP_SERVER/SMTP_ACCOUNT/MAIL_TO",
-        )
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = title
-    msg["From"] = MAIL_FROM or SMTP_USER
-    msg["To"] = MAIL_TO
-    msg.attach(MIMEText(content, "plain", "utf-8"))
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-    recipients = _email_recipients()
-    if not recipients:
-        return DeliveryResult("邮件/SMTP", True, False, "MAIL_TO 中没有有效收件人")
-
-    # Preferred mode first, then common fallbacks.
-    attempts: List[Tuple[bool, int]] = []
-    attempts.append((SMTP_SSL, SMTP_PORT))
-    if SMTP_SSL:
-        attempts.append((False, 587 if SMTP_PORT == 465 else SMTP_PORT))
-        if SMTP_PORT != 465:
-            attempts.append((True, 465))
-    else:
-        attempts.append((True, 465 if SMTP_PORT == 587 else SMTP_PORT))
-        if SMTP_PORT != 587:
-            attempts.append((False, 587))
-
-    seen = set()
-    errors: List[str] = []
-    context = ssl.create_default_context()
-    for use_ssl, port in attempts:
-        key = (use_ssl, port)
-        if key in seen:
-            continue
-        seen.add(key)
-        mode = "SSL" if use_ssl else "STARTTLS"
-        # Log host/port separately so GitHub secret masking does not turn
-        # "smtp.qq.com:465" into a confusing "***".
-        print(f"[push] SMTP try host={SMTP_HOST} port={port} mode={mode}")
-        try:
-            if use_ssl:
-                with smtplib.SMTP_SSL(SMTP_HOST, port, timeout=REQUEST_TIMEOUT, context=context) as server:
-                    server.login(SMTP_USER, SMTP_PASS)
-                    server.sendmail(MAIL_FROM or SMTP_USER, recipients, msg.as_string())
-            else:
-                with smtplib.SMTP(SMTP_HOST, port, timeout=REQUEST_TIMEOUT) as server:
-                    server.ehlo()
-                    server.starttls(context=context)
-                    server.ehlo()
-                    server.login(SMTP_USER, SMTP_PASS)
-                    server.sendmail(MAIL_FROM or SMTP_USER, recipients, msg.as_string())
-            return DeliveryResult("邮件/SMTP", True, True, f"投递成功 {SMTP_HOST}:{port} {mode}")
-        except Exception as exc:
-            err = f"{SMTP_HOST}:{port} {mode}: {_smtp_error_message(exc)}"
-            print(f"[push] Email attempt failed: {err}")
-            errors.append(err)
-            if isinstance(exc, (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused)):
-                break
-
-    return DeliveryResult("邮件/SMTP", True, False, "；".join(errors))
-
-
-def send_email(title: str, content: str, html_content: str) -> DeliveryResult:
-    """Email notify with GitHub Actions-aware strategy.
-
-    Notes:
-    - Your SMTP_SERVER value like smtp.qq.com:465 is fine.
-    - GitHub-hosted runners commonly block outbound SMTP 25/465/587, which
-      surfaces as "Connection unexpectedly closed" before AUTH.
-    - On Actions, prefer Resend HTTPS if RESEND_API_KEY is configured.
-    """
-    on_gha = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-    has_smtp = bool(SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_TO)
-    has_resend = bool(RESEND_API_KEY and MAIL_TO)
-    smtp_requested = bool(
-        SMTP_SERVER
-        or SMTP_ACCOUNT
-        or SMTP_HOST_ENV
-        or SMTP_PORT_ENV
-        or SMTP_USER_ENV
-        or SMTP_PASS_ENV
-        or SMTP_TO_ENV
-        or SMTP_FROM_ENV
-    )
-    resend_requested = bool(RESEND_API_KEY or RESEND_FROM)
-
-    if not has_smtp and not has_resend:
-        errors: List[str] = []
-        if resend_requested:
-            errors.append("Resend 缺少 RESEND_API_KEY 或 MAIL_TO")
-        if smtp_requested:
-            errors.append(
-                "SMTP 配置不完整；请检查 SMTP_HOST/PORT/USER/PASS/TO，"
-                "或 SMTP_SERVER/SMTP_ACCOUNT/MAIL_TO"
-            )
-        if errors:
-            return DeliveryResult("邮件", True, False, "；".join(errors))
-        return DeliveryResult("邮件", False, False, "未配置邮件渠道")
-
-    if on_gha:
-        if has_smtp and not has_resend:
-            print(
-                "[push] Running on GitHub Actions with SMTP configured but no RESEND_API_KEY. "
-                "GitHub Actions blocks outbound SMTP ports 465/587. "
-                "Configure RESEND_API_KEY secret to send email via HTTPS."
-            )
-        if has_smtp and has_resend:
-            print(
-                "[push] Running on GitHub Actions with SMTP configured: outbound ports "
-                "465/587 may be unavailable. Will prefer Resend HTTPS when configured."
-            )
-        if has_resend:
-            resend_result = send_email_resend(title, content, html_content)
-            if resend_result.ok:
-                return resend_result
-        if has_smtp:
-            smtp_result = send_email_smtp(title, content, html_content)
-            if smtp_result.ok:
-                return smtp_result
-            if has_resend:
-                smtp_result.message = f"Resend: {resend_result.message}；SMTP: {smtp_result.message}"
-            return smtp_result
-        return resend_result
-
-    # Local / self-hosted: SMTP first, Resend fallback.
-    if has_smtp:
-        smtp_result = send_email_smtp(title, content, html_content)
-        if smtp_result.ok:
-            return smtp_result
-    if has_resend:
-        resend_result = send_email_resend(title, content, html_content)
-        if resend_result.ok:
-            return resend_result
-        if has_smtp:
-            resend_result.message = f"SMTP: {smtp_result.message}；Resend: {resend_result.message}"
-        return resend_result
-    return smtp_result
-
-
-def notify(title: str, plain_content: str, markdown_content: str, html_content: str) -> List[DeliveryResult]:
+def notify(title: str, markdown_content: str) -> List[DeliveryResult]:
     print("--- notify ---")
     print(title)
-    print(plain_content)
+    print(markdown_content)
     print("--------------")
     results = [
         send_serverchan(title, markdown_content),
-        send_email(title, plain_content, html_content),
     ]
     print("--- delivery report ---")
     for result in results:
@@ -1849,15 +1482,10 @@ def main() -> int:
         time.sleep(1)
 
     success_count = sum(1 for r in results if r.ok)
-    title, plain_summary, markdown_summary, html_summary = build_notification(results)
-    deliveries = notify(title, plain_summary, markdown_summary, html_summary)
+    title, markdown_summary = build_notification(results)
+    notify(title, markdown_summary)
 
     all_accounts_ok = success_count == len(results)
-    configured_deliveries = [delivery for delivery in deliveries if delivery.configured]
-    notification_ok = any(delivery.ok for delivery in configured_deliveries)
-    if REQUIRE_NOTIFICATION_SUCCESS and not notification_ok:
-        print("ERROR: REQUIRE_NOTIFICATION_SUCCESS is enabled, but no notification channel succeeded")
-        return 3
     return 0 if all_accounts_ok else 2
 
 
